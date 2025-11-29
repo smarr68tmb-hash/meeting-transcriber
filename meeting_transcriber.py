@@ -2,18 +2,76 @@
 # -*- coding: utf-8 -*-
 
 """
-Система записи и транскрипции совещаний v4.7 (all-in-one)
+Система записи и транскрипции совещаний v4.8 (all-in-one)
 - Запись (ffmpeg) + список устройств
 - Надёжная safe-конвертация (-nostdin, mono 16kHz PCM)
 - faster-whisper с cpu_threads (устранение подвисаний на CPU)
 - tqdm-прогресс по секундам + «живой» статус каждые 2–3 сек (t≈MM:SS, сегментов: N)
 - Первый проход без VAD, fallback с VAD/ru при пустом результате
 - Итоговая сводка и сохранение TXT/JSON/SRT
+- Система логирования с ротацией файлов (-v/--verbose, --debug)
 """
 
-import os, sys, re, shutil, subprocess, datetime, json, time, argparse, platform
+import os, sys, re, shutil, subprocess, datetime, json, time, argparse, platform, logging
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
+from logging.handlers import RotatingFileHandler
+
+# ------------------- LOGGING SETUP -------------------
+def setup_logging(verbose: bool = False, debug: bool = False) -> logging.Logger:
+    """Настройка системы логирования с выводом в консоль и файл."""
+    logger = logging.getLogger("meeting_transcriber")
+    
+    # Определяем уровень логирования
+    if debug:
+        level = logging.DEBUG
+    elif verbose:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    
+    logger.setLevel(logging.DEBUG)  # Логгер принимает всё, фильтруют handlers
+    
+    # Формат для консоли (краткий)
+    console_format = logging.Formatter(
+        '%(asctime)s │ %(levelname)-7s │ %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    
+    # Формат для файла (подробный)
+    file_format = logging.Formatter(
+        '%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(console_format)
+    
+    # File handler с ротацией (5 MB, 3 бэкапа)
+    log_dir = Path.home() / "Meeting_Recordings" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "meeting_transcriber.log"
+    
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,  # 5 MB
+        backupCount=3,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG)  # В файл пишем всё
+    file_handler.setFormatter(file_format)
+    
+    # Очищаем существующие handlers и добавляем новые
+    logger.handlers.clear()
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    
+    return logger
+
+# Глобальный логгер (инициализируется в main)
+logger = logging.getLogger("meeting_transcriber")
 
 # ------------------- Torch (для whisper) -------------------
 HAS_TORCH = False
@@ -28,7 +86,7 @@ try:
     from tqdm import tqdm
 except ImportError:
     def tqdm(iterable=None, **kwargs):
-        print("⚠️ tqdm не установлен. Установите: pip install tqdm")
+        logger.warning("tqdm не установлен. Установите: pip install tqdm")
         return iterable if iterable is not None else []
 
 # ------------------- CONFIG -------------------
@@ -107,18 +165,20 @@ class MeetingRecorder:
     def list_devices(self) -> None:
         fmt = self.platform_config['format']
         cmd = ['ffmpeg','-f', fmt, *self.platform_config['list_cmd'], '-i', self.platform_config['dummy']]
-        print(f"🔍 Выполняю: {' '.join(cmd)}")
+        logger.info(f"🔍 Выполняю: {' '.join(cmd)}")
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
             output = (res.stderr or '') + "\n" + (res.stdout or '')
-            print("\n" + output)
+            print("\n" + output)  # Вывод устройств всегда в консоль
+            logger.debug(f"Список устройств получен")
         except Exception as e:
-            print(f"❌ Не удалось получить список устройств: {e}")
+            logger.error(f"Не удалось получить список устройств: {e}")
 
     def _record_probe(self, device: str) -> bool:
         if Config.PRE_RECORD_PROBE <= 0:
+            logger.debug("Пробная запись отключена (PRE_RECORD_PROBE=0)")
             return True
-        print(f"🔎 Пробная запись ({Config.PRE_RECORD_PROBE} сек) — проверка устройства '{device}'...")
+        logger.info(f"🔎 Пробная запись ({Config.PRE_RECORD_PROBE} сек) — проверка устройства '{device}'...")
         probe_file = Config.LOGS_FOLDER / "_probe.wav"
         cmd = [
             'ffmpeg','-y','-hide_banner','-nostdin',
@@ -129,20 +189,24 @@ class MeetingRecorder:
             str(probe_file)
         ]
         log_file = Config.LOGS_FOLDER / "_probe.log"
+        logger.debug(f"Команда пробной записи: {' '.join(cmd)}")
         try:
             with open(log_file,'w',encoding='utf-8') as log:
                 p = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
                 p.wait()
             ok = (p.returncode == 0) and ffprobe_ok(probe_file)
             if ok:
-                print("✅ Проба успешна")
+                logger.info("✅ Проба успешна")
             else:
-                print("❌ Пробная запись не удалась. См. лог:", log_file)
+                logger.error(f"Пробная запись не удалась. См. лог: {log_file}")
             return ok
         finally:
             if probe_file.exists():
-                try: probe_file.unlink()
-                except: pass
+                try: 
+                    probe_file.unlink()
+                    logger.debug("Временный файл пробы удалён")
+                except OSError as e:
+                    logger.warning(f"Не удалось удалить временный файл пробы: {e}")
 
     def record(self, output_file: Path, device: str) -> Optional[List[Path]]:
         if not self._record_probe(device):
@@ -165,10 +229,15 @@ class MeetingRecorder:
         cmd += ['-af', Config.VOICE_FILTERS, str(output_path)]
 
         log_file = Config.LOGS_FOLDER / f"{output_file.stem}.log"
+        logger.debug(f"Команда записи: {' '.join(cmd)}")
+        
+        # Красивый вывод в консоль (всегда показываем)
         print("\n" + "="*52)
         print(f"🔴 ЗАПИСЬ НАЧАТА -> {output_path.name}")
         print("⏹  Остановка: Ctrl+C")
         print("="*52)
+        
+        logger.info(f"Запись начата: {output_path.name}")
         try:
             with open(log_file,'w',encoding='utf-8') as log:
                 self.recording_process = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
@@ -179,17 +248,23 @@ class MeetingRecorder:
                     time.sleep(1)
         except KeyboardInterrupt:
             print("\n⏸ Останавливаю запись...")
+            logger.info("Запись остановлена пользователем (Ctrl+C)")
             if self.recording_process:
                 self.recording_process.terminate()
                 self.recording_process.wait()
         except Exception as e:
-            print(f"\n❌ Ошибка записи: {e}")
+            logger.error(f"Ошибка записи: {e}", exc_info=True)
             return None
 
+        duration = time.time() - start if 'start' in locals() else 0
+        logger.info(f"Запись завершена: {output_path.name}, длительность: {duration/60:.1f} мин")
         print("\n✅ Запись завершена")
+        
         if output_path.exists() and ffprobe_ok(output_path):
+            file_size = output_path.stat().st_size / (1024 * 1024)
+            logger.info(f"Файл создан: {output_path}, размер: {file_size:.1f} MB")
             return [output_path]
-        print(f"❌ Файл записи не создан/повреждён. Лог: {log_file}")
+        logger.error(f"Файл записи не создан или повреждён. Лог: {log_file}")
         return None
 
 # ------------------- TRANSCRIBER -------------------
@@ -226,14 +301,16 @@ class EnhancedTranscriber:
     # --- загрузка модели ---
     def _load_model(self) -> None:
         if self.model_loaded:
+            logger.debug("Модель уже загружена, пропускаем")
             return
-        print(f"\n🤖 Загрузка модели '{self.model_size}' (backend={self.backend})...")
+        logger.info(f"🤖 Загрузка модели '{self.model_size}' (backend={self.backend})...")
+        load_start = time.time()
+        
         if self.backend == 'faster':
             from faster_whisper import WhisperModel
             device = self._resolve_device_faster()
             cpu_threads = Config.FASTER_CPU_THREADS if device == 'cpu' else 0
-            if device == 'cpu':
-                print(f"   (cpu_threads={cpu_threads})")
+            logger.debug(f"faster-whisper: device={device}, compute_type={Config.FASTER_COMPUTE}, cpu_threads={cpu_threads}")
             self.model = WhisperModel(self.model_size, device=device,
                                       compute_type=Config.FASTER_COMPUTE,
                                       cpu_threads=cpu_threads)
@@ -241,39 +318,51 @@ class EnhancedTranscriber:
         else:
             import whisper
             device, fp16 = self._resolve_device_whisper()
+            logger.debug(f"openai-whisper: device={device}, fp16={fp16}")
             self.model = whisper.load_model(self.model_size, device=device)
             self.device = device
             self.use_fp16 = fp16
+        
+        load_time = time.time() - load_start
         self.model_loaded = True
-        print(f"✅ Модель загружена (device={self.device})")
+        logger.info(f"✅ Модель загружена (device={self.device}) за {load_time:.1f} сек")
 
     # --- верхний уровень ---
     def transcribe_files(self, files: List[Path]) -> None:
+        logger.info(f"Начинаем транскрипцию {len(files)} файл(ов)")
         self._load_model()
         success = 0
         total = len(files)
         for i, f in enumerate(files, 1):
             print(f"\n━━━ Файл {i}/{total}: {f.name} ━━━")
+            logger.info(f"Обработка файла {i}/{total}: {f.name}")
             ok = self._transcribe_single(f, auto_open=(i==1))
             success += 1 if ok else 0
+        
+        logger.info(f"📊 Итог: успешно {success}/{total}, ошибок {total-success}")
         print(f"\n📊 Итог: успешно {success}/{total}, ошибок {total-success}")
 
     # --- обработка одного файла ---
     def _transcribe_single(self, audio_file: Path, auto_open: bool=True) -> bool:
-        if not audio_file.exists() or not ffprobe_ok(audio_file):
-            print(f"❌ Файл не найден или повреждён: {audio_file}")
+        if not audio_file.exists():
+            logger.error(f"Файл не найден: {audio_file}")
+            return False
+        if not ffprobe_ok(audio_file):
+            logger.error(f"Файл повреждён или не является аудио: {audio_file}")
             return False
 
         # Safe WAV
         safe_file = audio_file.with_suffix(f".safe{datetime.datetime.now():%H%M%S}.wav")
+        logger.info("Подготовка аудио (конвертация в 16kHz mono WAV)...")
         print("Подготовка аудио...")
         try:
             subprocess.run([
                 "ffmpeg","-y","-i",str(audio_file),
                 "-ar","16000","-ac","1","-c:a","pcm_s16le","-nostdin", str(safe_file)
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logger.debug(f"Конвертация завершена: {safe_file}")
         except subprocess.CalledProcessError as e:
-            print(f"❌ Конвертация не удалась: {e}")
+            logger.error(f"Конвертация не удалась: {e}")
             return False
 
         t0 = time.time()
@@ -281,35 +370,51 @@ class EnhancedTranscriber:
 
         try:
             # 1) Первый проход — БЕЗ VAD (чтобы не «ждал речи»)
+            logger.debug(f"ASR проход 1: language={language}, vad=off")
             result = self._run_asr_once(safe_file, language=language, use_vad=False)
+            
             # 2) Fallback — c VAD и ru
             if not result or not result.get("segments"):
+                logger.warning("Первый проход пуст, пробуем с VAD...")
                 print("⚠️ Пусто без VAD, пробую с VAD...")
                 result = self._run_asr_once(safe_file, language=language or 'ru', use_vad=True)
+            
             if not result or not result.get("text","").strip():
-                print("❌ Транскрипция не дала результата")
+                logger.error("Транскрипция не дала результата")
                 return False
 
             elapsed = time.time() - t0
-            print(f"✅ Сегментов: {len(result['segments'])}, слов: {len(result['text'].split())}, время: {elapsed/60:.1f} мин.")
+            word_count = len(result['text'].split())
+            segment_count = len(result['segments'])
+            
+            logger.info(f"✅ Транскрипция завершена: {segment_count} сегментов, {word_count} слов, {elapsed/60:.1f} мин")
+            print(f"✅ Сегментов: {segment_count}, слов: {word_count}, время: {elapsed/60:.1f} мин.")
 
             ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             base= f"transcript_{audio_file.stem}_{ts}"
             txt = self._save_txt(result, base, audio_file.name, (language or 'auto'))
             jsn = self._save_json(result, base, audio_file.name, (language or 'auto'))
             srt = self._save_srt(result, base)
+            
+            logger.info(f"📄 Сохранено: {txt.name}, {jsn.name}, {srt.name}")
             print("📄 Сохранено:", txt.name, jsn.name, srt.name)
+            
             if auto_open:
                 self._open_file(txt)
             return True
         finally:
             if safe_file.exists():
-                try: safe_file.unlink()
-                except: pass
+                try: 
+                    safe_file.unlink()
+                    logger.debug("Временный safe WAV файл удалён")
+                except OSError as e:
+                    logger.warning(f"Не удалось удалить временный файл: {e}")
 
     # --- единичный прогон ASR с прогрессом ---
     def _run_asr_once(self, wav_file: Path, language: Optional[str], use_vad: bool):
         total_sec = get_audio_duration(wav_file)
+        logger.debug(f"Длительность аудио: {total_sec:.1f} сек")
+        
         pbar = tqdm(total=int(total_sec) if total_sec>0 else None,
                     desc="Транскрипция", unit="s",
                     bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
@@ -318,7 +423,9 @@ class EnhancedTranscriber:
         last_print = time.time()
 
         try:
+            logger.info(f"ASR start (lang={language}, vad={'on' if use_vad else 'off'})")
             print(f" > ASR start (lang={language}, vad={'on' if use_vad else 'off'})")
+            
             if self.backend == 'faster':
                 segments_it, info = self.model.transcribe(
                     str(wav_file),
@@ -345,10 +452,11 @@ class EnhancedTranscriber:
                         last_print = time.time()
 
                     if Config.DEBUG_SEGMENTS:
-                        print(f"\nDEBUG [{s.start:.2f}-{s.end:.2f}] {s.text[:60]}")
+                        logger.debug(f"[{s.start:.2f}-{s.end:.2f}] {s.text[:60]}")
 
                 if language is None:
                     language = getattr(info, 'language', None)
+                    logger.debug(f"Определён язык: {language}")
 
             else:  # openai/whisper
                 import whisper
@@ -360,7 +468,11 @@ class EnhancedTranscriber:
                 texts = [seg.get("text","") for seg in segs]
                 pbar.update(int(total_sec) if total_sec else 0)
 
+            logger.debug(f"ASR завершён: {len(segs)} сегментов")
             return {'text': " ".join(texts).strip(), 'segments': segs}
+        except Exception as e:
+            logger.error(f"Ошибка ASR: {e}", exc_info=True)
+            raise
         finally:
             if total_sec and pbar.n < int(total_sec):
                 pbar.update(int(total_sec) - pbar.n)
@@ -404,14 +516,39 @@ class EnhancedTranscriber:
 
     def _open_file(self, path: Path):
         try:
-            if platform.system() == "Darwin": subprocess.run(["open", str(path)], check=False)
-            elif platform.system() == "Windows": os.startfile(str(path))  # type: ignore
-            else: subprocess.run(["xdg-open", str(path)], check=False)
-        except Exception: pass
+            logger.debug(f"Открываю файл: {path}")
+            if platform.system() == "Darwin": 
+                subprocess.run(["open", str(path)], check=False)
+            elif platform.system() == "Windows": 
+                os.startfile(str(path))  # type: ignore
+            else: 
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception as e:
+            logger.warning(f"Не удалось открыть файл {path}: {e}")
 
 # ------------------- MAIN -------------------
 def main():
-    parser = argparse.ArgumentParser(description="Meeting Recorder & Transcriber v4.7")
+    global logger
+    
+    parser = argparse.ArgumentParser(
+        description="Meeting Recorder & Transcriber v4.8",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Примеры:
+  %(prog)s list-devices                    # Показать устройства
+  %(prog)s record "Совещание" --device :0  # Записать и транскрибировать
+  %(prog)s transcribe file.wav             # Транскрибировать файл
+  %(prog)s transcribe file.wav -v          # С подробным выводом
+  %(prog)s transcribe file.wav --debug     # С отладочной информацией
+        """
+    )
+    
+    # Глобальные флаги логирования
+    parser.add_argument("-v", "--verbose", action="store_true", 
+                        help="Подробный вывод (INFO уровень)")
+    parser.add_argument("--debug", action="store_true",
+                        help="Отладочный вывод (DEBUG уровень)")
+    
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # record
@@ -427,26 +564,37 @@ def main():
     subparsers.add_parser("list-devices", help="Показать доступные устройства")
 
     args = parser.parse_args()
+    
+    # Настраиваем логирование
+    logger = setup_logging(verbose=args.verbose, debug=args.debug)
+    logger.debug(f"Запуск с аргументами: {args}")
+    logger.debug(f"Конфигурация: model={Config.DEFAULT_MODEL}, backend={Config.ASR_BACKEND}, device={Config.ASR_DEVICE}")
 
     if args.command == "list-devices":
         MeetingRecorder().list_devices()
         sys.exit(0)
 
     if args.command == "record":
+        logger.info(f"Режим записи: '{args.name}', устройство: {args.device}")
         rec = MeetingRecorder()
         safe_name = re.sub(r'[^\w\s-]', '', args.name).strip().replace(' ','_')
         base = Config.RECORDINGS_FOLDER / f"{safe_name}_{datetime.datetime.now():%Y%m%d_%H%M}"
         files = rec.record(base, args.device)
         if not files:
+            logger.error("Запись не удалась")
             sys.exit(1)
+        logger.info("📝 Начинаем транскрипцию...")
         print("\n📝 Транскрипция...")
         tr = EnhancedTranscriber()
         tr.transcribe_files(files)
+        logger.info("Работа завершена успешно")
         sys.exit(0)
 
     if args.command == "transcribe":
+        logger.info(f"Режим транскрипции: {len(args.files)} файл(ов)")
         tr = EnhancedTranscriber()
         tr.transcribe_files(args.files)
+        logger.info("Работа завершена")
         sys.exit(0)
 
 if __name__ == "__main__":
