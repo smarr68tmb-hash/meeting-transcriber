@@ -6,13 +6,19 @@ export ASR_BACKEND=faster
 export ASR_DEVICE=auto
 export FASTER_COMPUTE_TYPE=int8
 
+# BlackHole: both = микрофон + системный звук (для онлайн-встреч)
+export CAPTURE_MODE=both
+
 MEETING_NAME="Meeting_$(date +%Y%m%d_%H%M)"
 
 echo "🎙 Запускаю запись..."
 echo "MEETING_NAME=$MEETING_NAME"
+echo "CAPTURE_MODE=$CAPTURE_MODE (микрофон + системный звук)"
+echo ""
+echo "⚠️  Убедись, что в System Settings → Sound → Output выбрано 'Многовыходное устройство'"
 echo ""
 
-/usr/bin/python3 -m meeting_transcriber record "$MEETING_NAME" --device ":0"
+/usr/bin/python3 -m meeting_transcriber record "$MEETING_NAME"
 
 echo ""
 echo "✅ Скрипт дошёл до конца"

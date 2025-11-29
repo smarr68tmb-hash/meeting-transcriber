@@ -1,8 +1,0 @@
-python3 - <<'PY'
-from faster_whisper import WhisperModel
-model = WhisperModel("medium", device="cpu", compute_type="int8")
-segments, info = model.transcribe("/Users/a1111/Meeting_Recordings/Meeting_20250925_1006_20250925_1006.safe.wav", vad_filter=True)
-print("Language:", info.language)
-for s in segments:
-    print(s.start, s.end, s.text)
-PY

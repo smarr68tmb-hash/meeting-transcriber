@@ -34,4 +34,7 @@ logs/
 .env
 .env.local
 
+# Old/deprecated files
+old/
+
 

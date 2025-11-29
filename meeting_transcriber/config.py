@@ -31,9 +31,22 @@ class Config:
 
     # ASR (Automatic Speech Recognition)
     DEFAULT_MODEL = os.environ.get('WHISPER_MODEL', 'medium')
-    ASR_BACKEND = os.environ.get('ASR_BACKEND', 'faster').lower()   # faster|whisper|whisperx
+    ASR_BACKEND = os.environ.get('ASR_BACKEND', 'faster').lower()   # faster|whisper|whisperx|groq|auto
     ASR_DEVICE = os.environ.get('ASR_DEVICE', 'auto').lower()       # auto|cpu|cuda|mps|metal
     FORCE_RU = (os.environ.get('FORCE_RU', '0') == '1')             # принудительно русский язык
+    
+    # Groq API настройки
+    GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
+    GROQ_MODEL = os.environ.get('GROQ_MODEL', 'whisper-large-v3')  # whisper-large-v3|whisper-large-v3-turbo
+    GROQ_TIMEOUT = int(os.environ.get('GROQ_TIMEOUT', '300'))        # таймаут запроса в секундах
+    GROQ_MAX_FILE_SIZE = 25 * 1024 * 1024                            # 25MB лимит Groq API
+    ASR_FALLBACK = os.environ.get('ASR_FALLBACK', '1') == '1'        # fallback на локальный при ошибке API
+    
+    # LLM суммаризация через Groq
+    SUMMARIZER_MODEL = os.environ.get('SUMMARIZER_MODEL', 'llama-3.3-70b-versatile')  # LLM модель для саммари
+    SUMMARIZER_TIMEOUT = int(os.environ.get('SUMMARIZER_TIMEOUT', '120'))              # таймаут LLM запроса
+    SUMMARIZER_MAX_TOKENS = int(os.environ.get('SUMMARIZER_MAX_TOKENS', '4096'))       # макс. токенов ответа
+    AUTO_SUMMARIZE = os.environ.get('AUTO_SUMMARIZE', '0') == '1'                      # авто-суммаризация
 
     # faster-whisper специфичные настройки
     FASTER_COMPUTE = os.environ.get('FASTER_COMPUTE_TYPE', 'int8')  # int8|int8_float16|float16|float32
@@ -48,6 +61,11 @@ class Config:
     WHISPERX_LANGUAGE = os.environ.get('WHISPERX_LANGUAGE', 'ru')   # язык по умолчанию
     DIARIZE_MIN_SPEAKERS = os.environ.get('DIARIZE_MIN_SPEAKERS')   # hint: мин. спикеров
     DIARIZE_MAX_SPEAKERS = os.environ.get('DIARIZE_MAX_SPEAKERS')   # hint: макс. спикеров
+    
+    # BlackHole интеграция (macOS)
+    # Режим захвата: mic = микрофон, system = системный звук, both = оба
+    CAPTURE_MODE = os.environ.get('CAPTURE_MODE', 'both').lower()   # mic|system|both (both для встреч)
+    BLACKHOLE_DEVICE = os.environ.get('BLACKHOLE_DEVICE', '')       # авто или явный ID
 
     # Отладка
     DEBUG_SEGMENTS = os.environ.get('DEBUG_SEGMENTS', '0') == '1'

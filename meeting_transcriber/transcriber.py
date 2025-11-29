@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Модуль транскрипции аудио с использованием Whisper.
-Поддерживает faster-whisper, openai-whisper и whisperx (с диаризацией) backends.
+Поддерживает faster-whisper, openai-whisper, whisperx и Groq API backends.
 """
 
 import os
@@ -16,8 +16,23 @@ from typing import Optional, List, Dict, Any, Tuple
 from .config import Config
 from .utils import ffprobe_ok, get_audio_duration, format_timestamp_srt
 from .logging_setup import get_logger
+from .postprocess import postprocess_transcription, filter_hallucinations
+from .summarizer import MeetingSummarizer, format_summary_text, check_summarizer_available
 
 logger = get_logger()
+
+# Проверяем доступность Groq
+HAS_GROQ = False
+try:
+    from .groq_backend import (
+        GroqTranscriber, 
+        GroqRateLimitError, 
+        GroqAPIError,
+        check_groq_available
+    )
+    HAS_GROQ = check_groq_available()
+except ImportError:
+    pass
 
 # Проверяем доступность WhisperX
 HAS_WHISPERX = False
@@ -47,14 +62,24 @@ except ImportError:
 class EnhancedTranscriber:
     """
     Класс для транскрипции аудио файлов.
-    Поддерживает faster-whisper, openai-whisper и whisperx (с диаризацией) backends.
+    Поддерживает faster-whisper, openai-whisper, whisperx и Groq API backends.
+    
+    Backends:
+        - groq: Быстрый облачный API (бесплатно до 8ч/день)
+        - auto: Groq с fallback на faster-whisper
+        - faster: Локальный faster-whisper
+        - whisper: Локальный openai-whisper
+        - whisperx: WhisperX с диаризацией
     """
     
     def __init__(
         self,
         diarize: bool = False,
         min_speakers: Optional[int] = None,
-        max_speakers: Optional[int] = None
+        max_speakers: Optional[int] = None,
+        filter_hallucinations: bool = True,
+        summarize: Optional[bool] = None,
+        summary_language: str = "ru"
     ):
         """
         Инициализация транскрибера.
@@ -63,6 +88,9 @@ class EnhancedTranscriber:
             diarize: Включить диаризацию спикеров (требует whisperx backend)
             min_speakers: Минимальное число спикеров (hint для диаризации)
             max_speakers: Максимальное число спикеров (hint для диаризации)
+            filter_hallucinations: Фильтровать галлюцинации Whisper
+            summarize: Генерировать саммари (None = использовать AUTO_SUMMARIZE)
+            summary_language: Язык саммари (ru/en)
         """
         Config.ensure_directories()
         self.model = None
@@ -74,12 +102,34 @@ class EnhancedTranscriber:
         self.diarize = diarize
         self.min_speakers = min_speakers
         self.max_speakers = max_speakers
+        self.filter_hallucinations = filter_hallucinations
+        # None = использовать глобальную настройку, иначе явное значение
+        self.summarize = summarize if summarize is not None else Config.AUTO_SUMMARIZE
+        self.summary_language = summary_language
+        
+        # Groq транскрибер (для облачной транскрипции)
+        self.groq_transcriber = None
+        
+        # LLM суммаризатор
+        self.summarizer = None
         
         # WhisperX транскрибер (для диаризации)
         self.whisperx_transcriber = None
         
+        # Fallback backend для режима 'auto' или при ошибках API
+        self.fallback_backend = 'faster'
+        
+        # Обрабатываем режим 'auto'
+        if self.backend == 'auto':
+            if HAS_GROQ:
+                logger.info("Режим auto: используем Groq API с fallback на faster-whisper")
+                self.backend = 'groq'
+            else:
+                logger.info("Режим auto: Groq недоступен, используем faster-whisper")
+                self.backend = 'faster'
+        
         # Автоматически переключаемся на whisperx если нужна диаризация
-        if diarize and self.backend != 'whisperx':
+        if diarize and self.backend not in ('whisperx',):
             if HAS_WHISPERX:
                 logger.info("Диаризация запрошена, переключаюсь на whisperx backend")
                 self.backend = 'whisperx'
@@ -89,6 +139,14 @@ class EnhancedTranscriber:
                     "Установите: pip install whisperx. Диаризация отключена."
                 )
                 self.diarize = False  # Отключаем, чтобы не вводить в заблуждение
+        
+        # Проверяем доступность Groq если выбран
+        if self.backend == 'groq' and not HAS_GROQ:
+            logger.warning(
+                "Groq backend выбран, но GROQ_API_KEY не установлен. "
+                "Переключаюсь на faster-whisper."
+            )
+            self.backend = 'faster'
 
     def _resolve_device_whisper(self) -> Tuple[str, bool]:
         """Определить устройство для openai-whisper."""
@@ -120,6 +178,118 @@ class EnhancedTranscriber:
         if d == 'mps':
             return 'metal'
         return 'auto'
+    
+    def _prepare_safe_wav(self, audio_file: Path) -> Optional[Path]:
+        """
+        Подготовить безопасный WAV файл для локальной обработки.
+        
+        Args:
+            audio_file: Исходный аудио файл
+            
+        Returns:
+            Путь к конвертированному WAV или None при ошибке
+        """
+        safe_file = audio_file.with_suffix(
+            f".safe{datetime.datetime.now():%H%M%S}.wav"
+        )
+        
+        logger.info("Подготовка аудио (конвертация в 16kHz mono WAV)...")
+        print("Подготовка аудио...")
+        
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-i", str(audio_file),
+                "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-nostdin",
+                str(safe_file)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logger.debug(f"Конвертация завершена: {safe_file}")
+            return safe_file
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Конвертация не удалась: {e}")
+            return None
+    
+    def _cleanup_temp_file(self, temp_file: Path) -> None:
+        """Удалить временный файл."""
+        if temp_file and temp_file.exists():
+            try:
+                temp_file.unlink()
+                logger.debug("Временный файл удалён")
+            except OSError as e:
+                logger.warning(f"Не удалось удалить временный файл: {e}")
+    
+    def _run_groq_with_fallback(
+        self,
+        audio_file: Path,
+        language: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Выполнить транскрипцию через Groq API с fallback на локальный backend.
+        
+        Args:
+            audio_file: Путь к аудио файлу
+            language: Язык или None для автоопределения
+            
+        Returns:
+            Словарь с text и segments
+        """
+        # Пробуем Groq API
+        try:
+            logger.info("Пробуем Groq API...")
+            result = self.groq_transcriber.transcribe(audio_file, language=language)
+            result['backend'] = 'groq'
+            return result
+            
+        except GroqRateLimitError as e:
+            logger.warning(f"Groq rate limit: {e}")
+            print(f"⚠️ Groq лимит исчерпан: {e}")
+            
+        except GroqAPIError as e:
+            logger.warning(f"Groq API error: {e}")
+            print(f"⚠️ Ошибка Groq API: {e}")
+            
+        except Exception as e:
+            logger.warning(f"Неожиданная ошибка Groq: {e}")
+            print(f"⚠️ Ошибка Groq: {e}")
+        
+        # Fallback на локальный backend
+        if not Config.ASR_FALLBACK:
+            logger.error("Fallback отключён (ASR_FALLBACK=0), транскрипция прервана")
+            return None
+        
+        print(f"🔄 Переключаюсь на локальный backend ({self.fallback_backend})...")
+        logger.info(f"Fallback на {self.fallback_backend}")
+        
+        # Загружаем локальную модель если ещё не загружена
+        if not self.model_loaded:
+            original_backend = self.backend
+            self.backend = self.fallback_backend
+            self._load_model()
+            self.backend = original_backend
+        
+        # Подготавливаем WAV для локальной обработки
+        safe_file = self._prepare_safe_wav(audio_file)
+        if not safe_file:
+            return None
+        
+        try:
+            # Первый проход — БЕЗ VAD
+            result = self._run_asr_once(safe_file, language=language, use_vad=False)
+            
+            # Fallback — с VAD
+            if not result or not result.get("segments"):
+                logger.warning("Первый проход пуст, пробуем с VAD...")
+                result = self._run_asr_once(
+                    safe_file,
+                    language=language or 'ru',
+                    use_vad=True
+                )
+            
+            if result:
+                result['backend'] = self.fallback_backend
+            return result
+            
+        finally:
+            self._cleanup_temp_file(safe_file)
 
     def _load_model(self) -> None:
         """Загрузить модель Whisper."""
@@ -180,8 +350,25 @@ class EnhancedTranscriber:
         Args:
             files: Список путей к аудио файлам
         """
-        logger.info(f"Начинаем транскрипцию {len(files)} файл(ов)")
-        self._load_model()
+        logger.info(f"Начинаем транскрипцию {len(files)} файл(ов), backend={self.backend}")
+        
+        # Groq не требует предварительной загрузки модели
+        if self.backend != 'groq':
+            self._load_model()
+        else:
+            # Инициализируем Groq транскрибер
+            self.groq_transcriber = GroqTranscriber()
+            logger.info(f"🚀 Groq API готов (модель: {self.groq_transcriber.model})")
+        
+        # Инициализируем суммаризатор если нужно
+        if self.summarize:
+            if check_summarizer_available():
+                self.summarizer = MeetingSummarizer()
+                logger.info(f"🧠 Суммаризатор готов (модель: {self.summarizer.model})")
+            else:
+                logger.warning("GROQ_API_KEY не установлен, суммаризация отключена")
+                print("⚠️ Суммаризация отключена: GROQ_API_KEY не установлен")
+                self.summarize = False
         
         success = 0
         total = len(files)
@@ -215,49 +402,59 @@ class EnhancedTranscriber:
             logger.error(f"Файл повреждён или не является аудио: {audio_file}")
             return False
         
-        # Конвертируем в safe WAV (16kHz, mono)
-        safe_file = audio_file.with_suffix(
-            f".safe{datetime.datetime.now():%H%M%S}.wav"
-        )
-        
-        logger.info("Подготовка аудио (конвертация в 16kHz mono WAV)...")
-        print("Подготовка аудио...")
-        
-        try:
-            subprocess.run([
-                "ffmpeg", "-y", "-i", str(audio_file),
-                "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-nostdin",
-                str(safe_file)
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            logger.debug(f"Конвертация завершена: {safe_file}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Конвертация не удалась: {e}")
-            return False
-        
         t0 = time.time()
         language = 'ru' if Config.FORCE_RU else None
+        result = None
+        used_backend = self.backend
         
         try:
-            # WhisperX backend (с диаризацией)
-            if self.backend == 'whisperx':
-                result = self._run_whisperx(safe_file, language=language)
+            # === Groq API backend ===
+            if self.backend == 'groq':
+                result = self._run_groq_with_fallback(audio_file, language=language)
+                if result:
+                    used_backend = result.get('backend', 'groq')
+            
+            # === WhisperX backend (с диаризацией) ===
+            elif self.backend == 'whisperx':
+                safe_file = self._prepare_safe_wav(audio_file)
+                if not safe_file:
+                    return False
+                try:
+                    result = self._run_whisperx(safe_file, language=language)
+                finally:
+                    self._cleanup_temp_file(safe_file)
+            
+            # === Локальные backends (faster, whisper) ===
             else:
-                # Первый проход — БЕЗ VAD
-                logger.debug(f"ASR проход 1: language={language}, vad=off")
-                result = self._run_asr_once(safe_file, language=language, use_vad=False)
-                
-                # Fallback — с VAD и ru
-                if not result or not result.get("segments"):
-                    logger.warning("Первый проход пуст, пробуем с VAD...")
-                    print("⚠️ Пусто без VAD, пробую с VAD...")
-                    result = self._run_asr_once(
-                        safe_file,
-                        language=language or 'ru',
-                        use_vad=True
-                    )
+                safe_file = self._prepare_safe_wav(audio_file)
+                if not safe_file:
+                    return False
+                try:
+                    # Первый проход — БЕЗ VAD
+                    logger.debug(f"ASR проход 1: language={language}, vad=off")
+                    result = self._run_asr_once(safe_file, language=language, use_vad=False)
+                    
+                    # Fallback — с VAD и ru
+                    if not result or not result.get("segments"):
+                        logger.warning("Первый проход пуст, пробуем с VAD...")
+                        print("⚠️ Пусто без VAD, пробую с VAD...")
+                        result = self._run_asr_once(
+                            safe_file,
+                            language=language or 'ru',
+                            use_vad=True
+                        )
+                finally:
+                    self._cleanup_temp_file(safe_file)
             
             if not result or not result.get("text", "").strip():
                 logger.error("Транскрипция не дала результата")
+                return False
+            
+            # Постобработка: удаление галлюцинаций
+            result = postprocess_transcription(result, filter_enabled=self.filter_hallucinations)
+            
+            if not result.get("text", "").strip():
+                logger.error("После фильтрации галлюцинаций текст пуст")
                 return False
             
             elapsed = time.time() - t0
@@ -265,19 +462,22 @@ class EnhancedTranscriber:
             segment_count = len(result['segments'])
             speakers = result.get('speakers', [])
             
+            # Информация о backend
+            backend_info = f" [{used_backend}]" if used_backend != self.backend else ""
+            
             if speakers:
                 logger.info(
-                    f"✅ Транскрипция завершена: {segment_count} сегментов, "
-                    f"{word_count} слов, {len(speakers)} спикер(ов), {elapsed / 60:.1f} мин"
+                    f"✅ Транскрипция завершена{backend_info}: {segment_count} сегментов, "
+                    f"{word_count} слов, {len(speakers)} спикер(ов), {elapsed:.1f} сек"
                 )
                 print(f"✅ Сегментов: {segment_count}, слов: {word_count}, "
-                      f"спикеров: {len(speakers)}, время: {elapsed / 60:.1f} мин.")
+                      f"спикеров: {len(speakers)}, время: {elapsed:.1f} сек{backend_info}")
             else:
                 logger.info(
-                    f"✅ Транскрипция завершена: {segment_count} сегментов, "
-                    f"{word_count} слов, {elapsed / 60:.1f} мин"
+                    f"✅ Транскрипция завершена{backend_info}: {segment_count} сегментов, "
+                    f"{word_count} слов, {elapsed:.1f} сек"
                 )
-                print(f"✅ Сегментов: {segment_count}, слов: {word_count}, время: {elapsed / 60:.1f} мин.")
+                print(f"✅ Сегментов: {segment_count}, слов: {word_count}, время: {elapsed:.1f} сек{backend_info}")
             
             # Сохраняем результаты
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -299,17 +499,39 @@ class EnhancedTranscriber:
             logger.info(f"📄 Сохранено: {txt.name}, {jsn.name}, {srt.name}")
             print("📄 Сохранено:", txt.name, jsn.name, srt.name)
             
+            # === Суммаризация ===
+            if self.summarize and self.summarizer:
+                try:
+                    summary_result = self.summarizer.summarize(
+                        transcript=result['text'],
+                        speakers=speakers if speakers else None,
+                        language=self.summary_language,
+                        include_action_items=True,
+                        include_speaker_analysis=bool(speakers)
+                    )
+                    
+                    # Сохраняем саммари
+                    summary_file = self._save_summary(summary_result, base)
+                    logger.info(f"📋 Саммари сохранено: {summary_file.name}")
+                    print(f"📋 Саммари: {summary_file.name}")
+                    
+                    # Открываем саммари вместо полного транскрипта
+                    if auto_open:
+                        self._open_file(summary_file)
+                        auto_open = False  # Не открывать txt дважды
+                        
+                except Exception as e:
+                    logger.error(f"Ошибка суммаризации: {e}", exc_info=True)
+                    print(f"⚠️ Суммаризация не удалась: {e}")
+            
             if auto_open:
                 self._open_file(txt)
             
             return True
-        finally:
-            if safe_file.exists():
-                try:
-                    safe_file.unlink()
-                    logger.debug("Временный safe WAV файл удалён")
-                except OSError as e:
-                    logger.warning(f"Не удалось удалить временный файл: {e}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка транскрипции: {e}", exc_info=True)
+            return False
 
     def _run_asr_once(
         self,
@@ -540,6 +762,34 @@ class EnhancedTranscriber:
                     text = f"[{s['speaker']}] {text}"
                 
                 f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+        return p
+
+    def _save_summary(self, summary_result: Dict, base: str) -> Path:
+        """
+        Сохранить саммари встречи.
+        
+        Args:
+            summary_result: Результат суммаризации
+            base: Базовое имя файла
+            
+        Returns:
+            Путь к файлу саммари
+        """
+        p = Config.TRANSCRIPTS_FOLDER / f"{base}_summary.md"
+        
+        # Форматируем текст
+        formatted = format_summary_text(summary_result)
+        
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write(formatted)
+        
+        # Также сохраняем JSON для программной обработки
+        json_path = Config.TRANSCRIPTS_FOLDER / f"{base}_summary.json"
+        with open(json_path, 'w', encoding='utf-8') as f:
+            import json
+            json.dump(summary_result, f, ensure_ascii=False, indent=2)
+        
+        logger.debug(f"Саммари сохранено: {p}, {json_path}")
         return p
 
     def _open_file(self, path: Path) -> None:

@@ -1,0 +1,38 @@
+# Meeting Transcriber v5.3.0
+# Система записи и транскрипции совещаний
+
+# === ОБЯЗАТЕЛЬНЫЕ ===
+faster-whisper>=1.0.0      # Быстрый локальный ASR backend
+tqdm>=4.65.0               # Прогресс-бары
+
+# === МОНИТОРИНГ ЗВУКА ===
+sounddevice>=0.4.6         # Мониторинг уровня при записи
+numpy>=1.24.0              # Для обработки аудио данных
+
+# === GROQ API (опционально, но рекомендуется) ===
+# Не требует дополнительных пакетов!
+# Использует встроенный urllib для запросов
+# Получите бесплатный ключ: https://console.groq.com
+# export GROQ_API_KEY="gsk_xxx"
+
+# === ОПЦИОНАЛЬНО: Альтернативные backends ===
+# openai-whisper>=20231117  # Оригинальный Whisper (медленнее)
+# whisperx>=3.1.0           # Для диаризации спикеров
+
+# === ОПЦИОНАЛЬНО: Диаризация ===
+# pyannote.audio>=3.1.0     # Speaker diarization (требует HF_TOKEN)
+
+# === TORCH (выберите один вариант) ===
+# Для CPU:
+# torch>=2.0.0 --index-url https://download.pytorch.org/whl/cpu
+
+# Для CUDA:
+# torch>=2.0.0 --index-url https://download.pytorch.org/whl/cu118
+
+# Для macOS (MPS):
+# torch>=2.0.0
+
+# === СИСТЕМНЫЕ ТРЕБОВАНИЯ ===
+# ffmpeg (установить отдельно: brew install ffmpeg)
+# ffprobe (идёт вместе с ffmpeg)
+

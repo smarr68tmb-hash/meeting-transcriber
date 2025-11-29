@@ -8,6 +8,9 @@ Meeting Transcriber - Система записи и транскрипции с
     - utils: Утилиты для работы с аудио
     - recorder: Запись аудио с микрофона
     - transcriber: Транскрипция аудио в текст
+    - groq_backend: Groq API для быстрой транскрипции
+    - summarizer: LLM суммаризация транскриптов
+    - blackhole: Интеграция с BlackHole для записи системного звука
     - whisperx: Backend с диаризацией спикеров
     - cli: Командный интерфейс
 """
@@ -48,12 +51,34 @@ except ImportError:
 from .config import Config
 from .recorder import MeetingRecorder
 from .transcriber import EnhancedTranscriber
+from .postprocess import postprocess_transcription, filter_hallucinations
+from .audio_monitor import AudioLevelMonitor
+from .groq_backend import GroqTranscriber, check_groq_available
+from .summarizer import MeetingSummarizer, format_summary_text, check_summarizer_available
+from .blackhole import (
+    CaptureMode,
+    check_blackhole_installed,
+    find_blackhole_device,
+    get_blackhole_status
+)
 from .cli import main, __version__
 
 __all__ = [
     "Config",
     "MeetingRecorder", 
     "EnhancedTranscriber",
+    "GroqTranscriber",
+    "MeetingSummarizer",
+    "AudioLevelMonitor",
+    "CaptureMode",
+    "postprocess_transcription",
+    "filter_hallucinations",
+    "format_summary_text",
+    "check_groq_available",
+    "check_summarizer_available",
+    "check_blackhole_installed",
+    "find_blackhole_device",
+    "get_blackhole_status",
     "main",
     "__version__",
 ]

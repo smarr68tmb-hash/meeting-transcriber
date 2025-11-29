@@ -11,6 +11,7 @@ from typing import Optional, List
 from .config import Config
 from .utils import get_platform_config, ffprobe_ok
 from .logging_setup import get_logger
+from .audio_monitor import AudioLevelMonitor
 
 logger = get_logger()
 
@@ -18,10 +19,18 @@ logger = get_logger()
 class MeetingRecorder:
     """Класс для записи аудио с микрофона."""
     
-    def __init__(self):
+    def __init__(self, enable_monitor: bool = True):
+        """
+        Инициализация рекордера.
+        
+        Args:
+            enable_monitor: Включить мониторинг уровня звука
+        """
         Config.ensure_directories()
         self.platform_config = get_platform_config()
         self.recording_process: Optional[subprocess.Popen] = None
+        self.enable_monitor = enable_monitor
+        self._audio_monitor: Optional[AudioLevelMonitor] = None
 
     def list_devices(self) -> None:
         """Показать список доступных аудио устройств."""
@@ -142,6 +151,15 @@ class MeetingRecorder:
         logger.info(f"Запись начата: {output_path.name}")
         start = time.time()
         
+        # Запускаем мониторинг уровня звука
+        if self.enable_monitor:
+            self._audio_monitor = AudioLevelMonitor(device=device)
+            if self._audio_monitor.is_available():
+                self._audio_monitor.start()
+                print("🎙️  Мониторинг уровня: активен")
+            else:
+                print("⚠️  Мониторинг уровня недоступен (установите: pip install sounddevice numpy)")
+        
         try:
             with open(log_file, 'w', encoding='utf-8') as log:
                 self.recording_process = subprocess.Popen(
@@ -149,9 +167,13 @@ class MeetingRecorder:
                 )
                 while self.recording_process.poll() is None:
                     elapsed = int(time.time() - start)
-                    print(f"\r⏱  Длительность: {elapsed // 60:02d}:{elapsed % 60:02d}", 
-                          end="", flush=True)
-                    time.sleep(1)
+                    # Если монитор активен, он сам выводит уровень
+                    # Иначе показываем только время
+                    monitor_active = self._audio_monitor and self._audio_monitor.is_available()
+                    if not monitor_active:
+                        print(f"\r⏱  Длительность: {elapsed // 60:02d}:{elapsed % 60:02d}", 
+                              end="", flush=True)
+                    time.sleep(0.1 if monitor_active else 1)
         except KeyboardInterrupt:
             print("\n⏸ Останавливаю запись...")
             logger.info("Запись остановлена пользователем (Ctrl+C)")
@@ -161,6 +183,11 @@ class MeetingRecorder:
         except Exception as e:
             logger.error(f"Ошибка записи: {e}", exc_info=True)
             return None
+        finally:
+            # Останавливаем монитор
+            if self._audio_monitor:
+                self._audio_monitor.stop()
+                self._audio_monitor = None
         
         duration = time.time() - start
         logger.info(f"Запись завершена: {output_path.name}, длительность: {duration / 60:.1f} мин")
