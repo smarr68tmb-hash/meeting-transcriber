@@ -31,7 +31,7 @@ class Config:
 
     # ASR (Automatic Speech Recognition)
     DEFAULT_MODEL = os.environ.get('WHISPER_MODEL', 'medium')
-    ASR_BACKEND = os.environ.get('ASR_BACKEND', 'faster').lower()   # faster|whisper
+    ASR_BACKEND = os.environ.get('ASR_BACKEND', 'faster').lower()   # faster|whisper|whisperx
     ASR_DEVICE = os.environ.get('ASR_DEVICE', 'auto').lower()       # auto|cpu|cuda|mps|metal
     FORCE_RU = (os.environ.get('FORCE_RU', '0') == '1')             # принудительно русский язык
 
@@ -40,6 +40,14 @@ class Config:
     FASTER_BEAM_SIZE = int(os.environ.get('FASTER_BEAM_SIZE', '5'))
     FASTER_VAD = os.environ.get('FASTER_VAD', '0') == '1'           # VAD по умолчанию выключен
     FASTER_CPU_THREADS = int(os.environ.get('FASTER_CPU_THREADS', '1'))
+
+    # WhisperX специфичные настройки (диаризация)
+    HF_TOKEN = os.environ.get('HF_TOKEN', '')                       # HuggingFace токен для pyannote
+    WHISPERX_COMPUTE = os.environ.get('WHISPERX_COMPUTE', 'float16')  # float16|int8
+    WHISPERX_BATCH_SIZE = int(os.environ.get('WHISPERX_BATCH_SIZE', '16'))
+    WHISPERX_LANGUAGE = os.environ.get('WHISPERX_LANGUAGE', 'ru')   # язык по умолчанию
+    DIARIZE_MIN_SPEAKERS = os.environ.get('DIARIZE_MIN_SPEAKERS')   # hint: мин. спикеров
+    DIARIZE_MAX_SPEAKERS = os.environ.get('DIARIZE_MAX_SPEAKERS')   # hint: макс. спикеров
 
     # Отладка
     DEBUG_SEGMENTS = os.environ.get('DEBUG_SEGMENTS', '0') == '1'

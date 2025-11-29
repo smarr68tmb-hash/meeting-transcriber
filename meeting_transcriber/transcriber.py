@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Модуль транскрипции аудио с использованием Whisper.
-Поддерживает faster-whisper и openai-whisper backends.
+Поддерживает faster-whisper, openai-whisper и whisperx (с диаризацией) backends.
 """
 
 import os
@@ -18,6 +18,14 @@ from .utils import ffprobe_ok, get_audio_duration, format_timestamp_srt
 from .logging_setup import get_logger
 
 logger = get_logger()
+
+# Проверяем доступность WhisperX
+HAS_WHISPERX = False
+try:
+    from .whisperx import WhisperXTranscriber, check_whisperx_available
+    HAS_WHISPERX = check_whisperx_available()
+except ImportError:
+    pass
 
 # Проверяем наличие torch
 HAS_TORCH = False
@@ -39,10 +47,16 @@ except ImportError:
 class EnhancedTranscriber:
     """
     Класс для транскрипции аудио файлов.
-    Поддерживает faster-whisper и openai-whisper backends.
+    Поддерживает faster-whisper, openai-whisper и whisperx (с диаризацией) backends.
     """
     
-    def __init__(self):
+    def __init__(self, diarize: bool = False):
+        """
+        Инициализация транскрибера.
+        
+        Args:
+            diarize: Включить диаризацию спикеров (требует whisperx backend)
+        """
         Config.ensure_directories()
         self.model = None
         self.model_loaded = False
@@ -50,6 +64,22 @@ class EnhancedTranscriber:
         self.backend = Config.ASR_BACKEND
         self.device = 'cpu'
         self.use_fp16 = False
+        self.diarize = diarize
+        
+        # WhisperX транскрибер (для диаризации)
+        self.whisperx_transcriber = None
+        
+        # Автоматически переключаемся на whisperx если нужна диаризация
+        if diarize and self.backend != 'whisperx':
+            if HAS_WHISPERX:
+                logger.info("Диаризация запрошена, переключаюсь на whisperx backend")
+                self.backend = 'whisperx'
+            else:
+                logger.warning(
+                    "Диаризация запрошена, но whisperx не установлен. "
+                    "Установите: pip install whisperx. Диаризация отключена."
+                )
+                self.diarize = False  # Отключаем, чтобы не вводить в заблуждение
 
     def _resolve_device_whisper(self) -> Tuple[str, bool]:
         """Определить устройство для openai-whisper."""
@@ -91,7 +121,17 @@ class EnhancedTranscriber:
         logger.info(f"🤖 Загрузка модели '{self.model_size}' (backend={self.backend})...")
         load_start = time.time()
         
-        if self.backend == 'faster':
+        if self.backend == 'whisperx':
+            # WhisperX с диаризацией
+            if not HAS_WHISPERX:
+                raise ImportError(
+                    "whisperx не установлен. Установите: pip install whisperx"
+                )
+            self.whisperx_transcriber = WhisperXTranscriber()
+            self.whisperx_transcriber.load_model()
+            self.device = self.whisperx_transcriber.device
+        
+        elif self.backend == 'faster':
             from faster_whisper import WhisperModel
             
             device = self._resolve_device_faster()
@@ -189,19 +229,23 @@ class EnhancedTranscriber:
         language = 'ru' if Config.FORCE_RU else None
         
         try:
-            # Первый проход — БЕЗ VAD
-            logger.debug(f"ASR проход 1: language={language}, vad=off")
-            result = self._run_asr_once(safe_file, language=language, use_vad=False)
-            
-            # Fallback — с VAD и ru
-            if not result or not result.get("segments"):
-                logger.warning("Первый проход пуст, пробуем с VAD...")
-                print("⚠️ Пусто без VAD, пробую с VAD...")
-                result = self._run_asr_once(
-                    safe_file,
-                    language=language or 'ru',
-                    use_vad=True
-                )
+            # WhisperX backend (с диаризацией)
+            if self.backend == 'whisperx':
+                result = self._run_whisperx(safe_file, language=language)
+            else:
+                # Первый проход — БЕЗ VAD
+                logger.debug(f"ASR проход 1: language={language}, vad=off")
+                result = self._run_asr_once(safe_file, language=language, use_vad=False)
+                
+                # Fallback — с VAD и ru
+                if not result or not result.get("segments"):
+                    logger.warning("Первый проход пуст, пробуем с VAD...")
+                    print("⚠️ Пусто без VAD, пробую с VAD...")
+                    result = self._run_asr_once(
+                        safe_file,
+                        language=language or 'ru',
+                        use_vad=True
+                    )
             
             if not result or not result.get("text", "").strip():
                 logger.error("Транскрипция не дала результата")
@@ -210,20 +254,38 @@ class EnhancedTranscriber:
             elapsed = time.time() - t0
             word_count = len(result['text'].split())
             segment_count = len(result['segments'])
+            speakers = result.get('speakers', [])
             
-            logger.info(
-                f"✅ Транскрипция завершена: {segment_count} сегментов, "
-                f"{word_count} слов, {elapsed / 60:.1f} мин"
-            )
-            print(f"✅ Сегментов: {segment_count}, слов: {word_count}, время: {elapsed / 60:.1f} мин.")
+            if speakers:
+                logger.info(
+                    f"✅ Транскрипция завершена: {segment_count} сегментов, "
+                    f"{word_count} слов, {len(speakers)} спикер(ов), {elapsed / 60:.1f} мин"
+                )
+                print(f"✅ Сегментов: {segment_count}, слов: {word_count}, "
+                      f"спикеров: {len(speakers)}, время: {elapsed / 60:.1f} мин.")
+            else:
+                logger.info(
+                    f"✅ Транскрипция завершена: {segment_count} сегментов, "
+                    f"{word_count} слов, {elapsed / 60:.1f} мин"
+                )
+                print(f"✅ Сегментов: {segment_count}, слов: {word_count}, время: {elapsed / 60:.1f} мин.")
             
             # Сохраняем результаты
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             base = f"transcript_{audio_file.stem}_{ts}"
             
-            txt = self._save_txt(result, base)
+            # Если есть спикеры, сохраняем с диаризацией
+            has_speakers = speakers or any(
+                seg.get('speaker') for seg in result['segments']
+            )
+            
+            if has_speakers:
+                txt = self._save_txt_diarized(result, base)
+            else:
+                txt = self._save_txt(result, base)
+            
             jsn = self._save_json(result, base, audio_file.name, language or 'auto')
-            srt = self._save_srt(result, base)
+            srt = self._save_srt(result, base, include_speaker=has_speakers)
             
             logger.info(f"📄 Сохранено: {txt.name}, {jsn.name}, {srt.name}")
             print("📄 Сохранено:", txt.name, jsn.name, srt.name)
@@ -340,12 +402,105 @@ class EnhancedTranscriber:
             pbar.close()
             print()  # Перенос строки после прогресса
 
+    def _run_whisperx(
+        self,
+        wav_file: Path,
+        language: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Выполнить транскрипцию через WhisperX с диаризацией.
+        
+        Args:
+            wav_file: Путь к WAV файлу
+            language: Язык или None для автоопределения
+            
+        Returns:
+            Словарь с text, segments, speakers
+        """
+        if not self.whisperx_transcriber:
+            raise RuntimeError("WhisperX транскрибер не инициализирован")
+        
+        # Получаем hints для числа спикеров
+        min_speakers = None
+        max_speakers = None
+        
+        if Config.DIARIZE_MIN_SPEAKERS:
+            try:
+                min_speakers = int(Config.DIARIZE_MIN_SPEAKERS)
+            except ValueError:
+                pass
+        
+        if Config.DIARIZE_MAX_SPEAKERS:
+            try:
+                max_speakers = int(Config.DIARIZE_MAX_SPEAKERS)
+            except ValueError:
+                pass
+        
+        return self.whisperx_transcriber.transcribe(
+            wav_file,
+            language=language,
+            diarize=self.diarize,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers
+        )
+
     def _save_txt(self, result: Dict, base: str) -> Path:
         """Сохранить результат в TXT."""
         p = Config.TRANSCRIPTS_FOLDER / f"{base}.txt"
         with open(p, 'w', encoding='utf-8') as f:
             f.write(result["text"])
         return p
+
+    def _save_txt_diarized(self, result: Dict, base: str) -> Path:
+        """Сохранить результат с диаризацией в TXT."""
+        p = Config.TRANSCRIPTS_FOLDER / f"{base}.txt"
+        
+        segments = result.get("segments", [])
+        lines = []
+        current_speaker = None
+        current_text = []
+        current_start = None
+        
+        for seg in segments:
+            speaker = seg.get("speaker", "SPEAKER")
+            text = seg.get("text", "").strip()
+            start = seg.get("start", 0)
+            
+            if not text:
+                continue
+            
+            # Группируем последовательные реплики одного спикера
+            if speaker == current_speaker:
+                current_text.append(text)
+            else:
+                # Сохраняем предыдущую группу
+                if current_text:
+                    ts = self._format_time_short(current_start)
+                    combined = " ".join(current_text)
+                    lines.append(f"[{ts}] {current_speaker}:\n{combined}")
+                
+                # Начинаем новую группу
+                current_speaker = speaker
+                current_text = [text]
+                current_start = start
+        
+        # Добавляем последнюю группу
+        if current_text:
+            ts = self._format_time_short(current_start)
+            combined = " ".join(current_text)
+            lines.append(f"[{ts}] {current_speaker}:\n{combined}")
+        
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write("\n\n".join(lines))
+        
+        return p
+
+    @staticmethod
+    def _format_time_short(seconds: float) -> str:
+        """Форматировать время в MM:SS."""
+        minutes = int(seconds) // 60
+        secs = int(seconds) % 60
+        return f"{minutes:02d}:{secs:02d}"
 
     def _save_json(
         self,
@@ -367,14 +522,30 @@ class EnhancedTranscriber:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return p
 
-    def _save_srt(self, result: Dict, base: str) -> Path:
-        """Сохранить результат в SRT (субтитры)."""
+    def _save_srt(
+        self,
+        result: Dict,
+        base: str,
+        include_speaker: bool = False
+    ) -> Path:
+        """
+        Сохранить результат в SRT (субтитры).
+        
+        Args:
+            result: Результат транскрипции
+            base: Базовое имя файла
+            include_speaker: Добавлять метку спикера
+        """
         p = Config.TRANSCRIPTS_FOLDER / f"{base}.srt"
         with open(p, 'w', encoding='utf-8') as f:
             for i, s in enumerate(result['segments'], 1):
                 start = format_timestamp_srt(s.get('start', 0.0))
                 end = format_timestamp_srt(s.get('end', 0.0))
                 text = (s.get('text') or '').strip()
+                
+                if include_speaker and s.get('speaker'):
+                    text = f"[{s['speaker']}] {text}"
+                
                 f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
         return p
 

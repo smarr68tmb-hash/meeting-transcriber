@@ -15,7 +15,7 @@ from .logging_setup import setup_logging, get_logger
 from .recorder import MeetingRecorder
 from .transcriber import EnhancedTranscriber
 
-__version__ = "5.0.0"
+__version__ = "5.1.0"  # Добавлена диаризация спикеров
 
 
 def main():
@@ -25,11 +25,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры:
-  %(prog)s list-devices                    # Показать устройства
-  %(prog)s record "Совещание" --device :0  # Записать и транскрибировать
-  %(prog)s transcribe file.wav             # Транскрибировать файл
-  %(prog)s transcribe file.wav -v          # С подробным выводом
-  %(prog)s transcribe file.wav --debug     # С отладочной информацией
+  %(prog)s list-devices                        # Показать устройства
+  %(prog)s record "Совещание" --device :0      # Записать и транскрибировать
+  %(prog)s transcribe file.wav                 # Транскрибировать файл
+  %(prog)s transcribe file.wav --diarize       # С определением спикеров
+  %(prog)s transcribe file.wav -v              # С подробным выводом
+
+Диаризация (определение спикеров):
+  Требует установки: pip install whisperx
+  Требует HuggingFace токен: export HF_TOKEN="hf_xxx"
+  Лицензия pyannote: huggingface.co/pyannote/speaker-diarization-3.1
         """
     )
     
@@ -73,6 +78,17 @@ def main():
         action="store_true",
         help="Только записать, без транскрипции"
     )
+    p_rec.add_argument(
+        "--diarize", "-d",
+        action="store_true",
+        help="Определять спикеров (требует whisperx и HF_TOKEN)"
+    )
+    p_rec.add_argument(
+        "--speakers",
+        type=int,
+        metavar="N",
+        help="Ожидаемое число спикеров (подсказка для диаризации)"
+    )
     
     # Команда: transcribe
     p_tr = subparsers.add_parser(
@@ -84,6 +100,17 @@ def main():
         nargs='+',
         type=Path,
         help="Путь к аудио файлу(ам)"
+    )
+    p_tr.add_argument(
+        "--diarize", "-d",
+        action="store_true",
+        help="Определять спикеров (требует whisperx и HF_TOKEN)"
+    )
+    p_tr.add_argument(
+        "--speakers",
+        type=int,
+        metavar="N",
+        help="Ожидаемое число спикеров (подсказка для диаризации)"
     )
     
     # Команда: list-devices
@@ -135,10 +162,14 @@ def _handle_record(args, logger):
         print(f"\n✅ Запись сохранена: {files[0]}")
         sys.exit(0)
     
-    logger.info("📝 Начинаем транскрипцию...")
-    print("\n📝 Транскрипция...")
+    diarize = getattr(args, 'diarize', False)
+    logger.info(f"📝 Начинаем транскрипцию... (diarize={diarize})")
+    print("\n📝 Транскрипция..." + (" с диаризацией" if diarize else ""))
     
-    tr = EnhancedTranscriber()
+    # Устанавливаем hint для числа спикеров
+    _set_speaker_hints(args)
+    
+    tr = EnhancedTranscriber(diarize=diarize)
     tr.transcribe_files(files)
     
     logger.info("Работа завершена успешно")
@@ -147,13 +178,33 @@ def _handle_record(args, logger):
 
 def _handle_transcribe(args, logger):
     """Обработка команды transcribe."""
-    logger.info(f"Режим транскрипции: {len(args.files)} файл(ов)")
+    diarize = getattr(args, 'diarize', False)
+    logger.info(f"Режим транскрипции: {len(args.files)} файл(ов), diarize={diarize}")
     
-    tr = EnhancedTranscriber()
+    if diarize:
+        print("🎭 Режим диаризации (определение спикеров)")
+    
+    # Устанавливаем hint для числа спикеров
+    _set_speaker_hints(args)
+    
+    tr = EnhancedTranscriber(diarize=diarize)
     tr.transcribe_files(args.files)
     
     logger.info("Работа завершена")
     sys.exit(0)
+
+
+def _set_speaker_hints(args):
+    """Установить hints для числа спикеров через env переменные."""
+    import os
+    speakers = getattr(args, 'speakers', None)
+    if speakers is not None:
+        if speakers < 1:
+            print(f"⚠️ Некорректное число спикеров ({speakers}), игнорирую")
+            return
+        # Устанавливаем как min и max для точного числа
+        os.environ['DIARIZE_MIN_SPEAKERS'] = str(speakers)
+        os.environ['DIARIZE_MAX_SPEAKERS'] = str(speakers)
 
 
 if __name__ == "__main__":
