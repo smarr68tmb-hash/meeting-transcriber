@@ -23,6 +23,7 @@ from .logging_setup import get_logger
 
 logger = get_logger()
 
+
 # Проверяем доступность whisperx
 HAS_WHISPERX = False
 try:
@@ -60,7 +61,8 @@ class WhisperXTranscriber:
         self.model_loaded = False
         self.model_size = Config.DEFAULT_MODEL
         self.device = self._resolve_device()
-        self.compute_type = Config.WHISPERX_COMPUTE
+        # float16 не работает на CPU, используем int8
+        self.compute_type = Config.WHISPERX_COMPUTE if self.device != 'cpu' else 'int8'
         self.hf_token = Config.HF_TOKEN
         
         # Кэшированные модели выравнивания
@@ -212,7 +214,8 @@ class WhisperXTranscriber:
                 
                 try:
                     # Загружаем pipeline диаризации
-                    diarize_model = whisperx.DiarizationPipeline(
+                    from whisperx.diarize import DiarizationPipeline
+                    diarize_model = DiarizationPipeline(
                         use_auth_token=self.hf_token,
                         device=self.device
                     )
