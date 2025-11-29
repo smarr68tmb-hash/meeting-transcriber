@@ -163,13 +163,16 @@ def _handle_record(args, logger):
         sys.exit(0)
     
     diarize = getattr(args, 'diarize', False)
-    logger.info(f"📝 Начинаем транскрипцию... (diarize={diarize})")
+    speakers = getattr(args, 'speakers', None)
+    logger.info(f"📝 Начинаем транскрипцию... (diarize={diarize}, speakers={speakers})")
     print("\n📝 Транскрипция..." + (" с диаризацией" if diarize else ""))
     
-    # Устанавливаем hint для числа спикеров
-    _set_speaker_hints(args)
+    # Передаём speakers как min и max для точного числа
+    min_sp = max_sp = None
+    if speakers is not None and speakers >= 1:
+        min_sp = max_sp = speakers
     
-    tr = EnhancedTranscriber(diarize=diarize)
+    tr = EnhancedTranscriber(diarize=diarize, min_speakers=min_sp, max_speakers=max_sp)
     tr.transcribe_files(files)
     
     logger.info("Работа завершена успешно")
@@ -179,32 +182,25 @@ def _handle_record(args, logger):
 def _handle_transcribe(args, logger):
     """Обработка команды transcribe."""
     diarize = getattr(args, 'diarize', False)
-    logger.info(f"Режим транскрипции: {len(args.files)} файл(ов), diarize={diarize}")
+    speakers = getattr(args, 'speakers', None)
+    logger.info(f"Режим транскрипции: {len(args.files)} файл(ов), diarize={diarize}, speakers={speakers}")
     
     if diarize:
         print("🎭 Режим диаризации (определение спикеров)")
     
-    # Устанавливаем hint для числа спикеров
-    _set_speaker_hints(args)
+    # Передаём speakers как min и max для точного числа
+    min_sp = max_sp = None
+    if speakers is not None:
+        if speakers < 1:
+            print(f"⚠️ Некорректное число спикеров ({speakers}), игнорирую")
+        else:
+            min_sp = max_sp = speakers
     
-    tr = EnhancedTranscriber(diarize=diarize)
+    tr = EnhancedTranscriber(diarize=diarize, min_speakers=min_sp, max_speakers=max_sp)
     tr.transcribe_files(args.files)
     
     logger.info("Работа завершена")
     sys.exit(0)
-
-
-def _set_speaker_hints(args):
-    """Установить hints для числа спикеров через env переменные."""
-    import os
-    speakers = getattr(args, 'speakers', None)
-    if speakers is not None:
-        if speakers < 1:
-            print(f"⚠️ Некорректное число спикеров ({speakers}), игнорирую")
-            return
-        # Устанавливаем как min и max для точного числа
-        os.environ['DIARIZE_MIN_SPEAKERS'] = str(speakers)
-        os.environ['DIARIZE_MAX_SPEAKERS'] = str(speakers)
 
 
 if __name__ == "__main__":

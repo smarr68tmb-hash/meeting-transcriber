@@ -50,12 +50,19 @@ class EnhancedTranscriber:
     Поддерживает faster-whisper, openai-whisper и whisperx (с диаризацией) backends.
     """
     
-    def __init__(self, diarize: bool = False):
+    def __init__(
+        self,
+        diarize: bool = False,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None
+    ):
         """
         Инициализация транскрибера.
         
         Args:
             diarize: Включить диаризацию спикеров (требует whisperx backend)
+            min_speakers: Минимальное число спикеров (hint для диаризации)
+            max_speakers: Максимальное число спикеров (hint для диаризации)
         """
         Config.ensure_directories()
         self.model = None
@@ -65,6 +72,8 @@ class EnhancedTranscriber:
         self.device = 'cpu'
         self.use_fp16 = False
         self.diarize = diarize
+        self.min_speakers = min_speakers
+        self.max_speakers = max_speakers
         
         # WhisperX транскрибер (для диаризации)
         self.whisperx_transcriber = None
@@ -420,28 +429,12 @@ class EnhancedTranscriber:
         if not self.whisperx_transcriber:
             raise RuntimeError("WhisperX транскрибер не инициализирован")
         
-        # Получаем hints для числа спикеров
-        min_speakers = None
-        max_speakers = None
-        
-        if Config.DIARIZE_MIN_SPEAKERS:
-            try:
-                min_speakers = int(Config.DIARIZE_MIN_SPEAKERS)
-            except ValueError:
-                pass
-        
-        if Config.DIARIZE_MAX_SPEAKERS:
-            try:
-                max_speakers = int(Config.DIARIZE_MAX_SPEAKERS)
-            except ValueError:
-                pass
-        
         return self.whisperx_transcriber.transcribe(
             wav_file,
             language=language,
             diarize=self.diarize,
-            min_speakers=min_speakers,
-            max_speakers=max_speakers
+            min_speakers=self.min_speakers,
+            max_speakers=self.max_speakers
         )
 
     def _save_txt(self, result: Dict, base: str) -> Path:
