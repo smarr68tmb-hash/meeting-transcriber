@@ -362,6 +362,11 @@ def print_blackhole_status():
         print("   2. Нажмите '+' → 'Create Aggregate Device'")
         print("   3. Включите галочки: микрофон + BlackHole 2ch")
         print("   4. Используйте: --capture-mode both")
+    
+    if status.get("aggregate_device"):
+        print("\n⚠️  Важно для качества звука (избежание 'квакания'):")
+        print("   • Clock Source: выберите 'Built-in Microphone'")
+        print("   • Drift Correction: включите ТОЛЬКО для BlackHole 2ch")
 
 
 def print_setup_instructions():
@@ -390,6 +395,12 @@ def print_setup_instructions():
 ║     • Нажмите "+" → "Create Aggregate Device"                     ║
 ║     • Включите: Built-in Microphone ✓ + BlackHole 2ch ✓           ║
 ║                                                                   ║
+║  ⚠️  ВАЖНО для избежания артефактов ("квакания"):                 ║
+║     • Clock Source: выберите "Built-in Microphone"                ║
+║     • Drift Correction: включите ТОЛЬКО для BlackHole 2ch         ║
+║       (НЕ для Built-in Microphone!)                               ║
+║     • Без правильной синхронизации будут искажения звука          ║
+║                                                                   ║
 ║  4. System Preferences → Sound → Output:                          ║
 ║     • Выберите "Multi-Output Device"                              ║
 ║                                                                   ║
@@ -406,6 +417,12 @@ def print_setup_instructions():
 ║                                                                   ║
 ║  # Явно указать BlackHole:                                        ║
 ║  meeting-transcriber record "Meeting" --device blackhole          ║
+║                                                                   ║
+║  🎚️ ПРЕСЕТЫ ФИЛЬТРОВ (для лучшего качества):                      ║
+║                                                                   ║
+║  --filter-preset raw   : минимальная обработка                    ║
+║  --filter-preset soft  : мягкая обработка (рекомендуется)         ║
+║  --filter-preset full  : полная обработка с шумодавом             ║
 ║                                                                   ║
 ╚══════════════════════════════════════════════════════════════════╝
 """)

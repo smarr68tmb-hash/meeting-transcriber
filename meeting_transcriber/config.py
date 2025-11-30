@@ -22,12 +22,33 @@ class Config:
     DEFAULT_SAMPLE_RATE = os.environ.get('REC_RATE', '48000')
     FLAC_LEVEL = os.environ.get('FLAC_LEVEL', '8')
     PRE_RECORD_PROBE = int(os.environ.get('PRE_RECORD_PROBE', '3'))  # сек; 0 = без пробы
-    VOICE_FILTERS = os.environ.get(
-        "VOICE_FILTERS",
-        "adeclick,highpass=f=80,lowpass=f=12000,anlmdn=s=7,"
-        "acompressor=threshold=-20dB:ratio=3:attack=5:release=100,"
-        "loudnorm=I=-16:TP=-1.5:LRA=11"
-    )
+    
+    # Пресеты аудио фильтров (для избежания "квакания" от агрессивного шумодава)
+    FILTER_PRESETS = {
+        # raw: минимальная обработка, максимальное качество
+        'raw': 'highpass=f=80',
+        
+        # soft: мягкая обработка без шумодава (рекомендуется)
+        'soft': 'adeclick,highpass=f=80,lowpass=f=12000,'
+                'acompressor=threshold=-24dB:ratio=2:attack=10:release=150,'
+                'loudnorm=I=-16:TP=-1.5:LRA=11',
+        
+        # full: полная обработка с мягким шумодавом (anlmdn=s=3 вместо s=7)
+        'full': 'adeclick,highpass=f=80,lowpass=f=12000,anlmdn=s=3,'
+                'acompressor=threshold=-20dB:ratio=3:attack=5:release=100,'
+                'loudnorm=I=-16:TP=-1.5:LRA=11',
+        
+        # legacy: старые настройки (может давать "квакание")
+        'legacy': 'adeclick,highpass=f=80,lowpass=f=12000,anlmdn=s=7,'
+                  'acompressor=threshold=-20dB:ratio=3:attack=5:release=100,'
+                  'loudnorm=I=-16:TP=-1.5:LRA=11',
+    }
+    
+    # Пресет фильтров по умолчанию: 'soft' — без шумодава, чистый звук
+    FILTER_PRESET = os.environ.get('FILTER_PRESET', 'soft').lower()
+    
+    # Кастомные фильтры (переопределяют пресет)
+    VOICE_FILTERS = os.environ.get('VOICE_FILTERS', FILTER_PRESETS.get(FILTER_PRESET, FILTER_PRESETS['soft']))
 
     # ASR (Automatic Speech Recognition)
     DEFAULT_MODEL = os.environ.get('WHISPER_MODEL', 'medium')

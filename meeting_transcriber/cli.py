@@ -23,7 +23,7 @@ from .blackhole import (
     get_blackhole_status
 )
 
-__version__ = "5.5.0"  # BlackHole интеграция для записи системного звука
+__version__ = "5.6.0"  # Улучшение качества записи: пресеты фильтров, мягкий шумодав
 
 
 def main():
@@ -74,6 +74,16 @@ BlackHole (запись системного звука, macOS):
     %(prog)s record "Zoom" --capture-mode system    # записать собеседников
     %(prog)s record "Meet" --device blackhole       # авто-выбор BlackHole
     %(prog)s blackhole-status                       # проверить настройку
+
+Пресеты аудио фильтров (--filter-preset):
+  raw    - минимальная обработка (максимальное качество)
+  soft   - мягкая обработка без шумодава (рекомендуется, по умолчанию)
+  full   - полная обработка с мягким шумодавом
+  legacy - старые настройки (может давать "квакание")
+  
+  Примеры:
+    %(prog)s record "Meeting" --filter-preset raw   # без обработки
+    %(prog)s record "Meeting" -f soft               # мягкие фильтры
         """
     )
     
@@ -137,6 +147,12 @@ BlackHole (запись системного звука, macOS):
         "--no-monitor",
         action="store_true",
         help="Отключить мониторинг уровня звука"
+    )
+    p_rec.add_argument(
+        "--filter-preset", "-f",
+        choices=["raw", "soft", "full", "legacy"],
+        default=None,
+        help="Пресет аудио фильтров: raw (минимум), soft (рекомендуется), full (с шумодавом), legacy (старый)"
     )
     p_rec.add_argument(
         "--summarize", "-s",
@@ -265,8 +281,28 @@ def _handle_record(args, logger):
         logger.error(f"Не удалось определить устройство: {device_desc}")
         sys.exit(1)
     
+    # Применяем пресет фильтров если указан
+    filter_preset = getattr(args, 'filter_preset', None)
+    if filter_preset:
+        if filter_preset in Config.FILTER_PRESETS:
+            Config.VOICE_FILTERS = Config.FILTER_PRESETS[filter_preset]
+            logger.info(f"Применён пресет фильтров: {filter_preset}")
+        else:
+            logger.warning(f"Неизвестный пресет: {filter_preset}, используется по умолчанию")
+            filter_preset = None  # Сбрасываем, чтобы UI показывал реальный пресет
+    
     logger.info(f"Режим записи: '{args.name}', режим: {capture_mode.value}, устройство: {device}")
     print(f"🎙️  {device_desc}")
+    
+    # Показываем текущий пресет
+    current_preset = filter_preset or Config.FILTER_PRESET
+    preset_desc = {
+        'raw': '🎚️  Фильтры: raw (минимум)',
+        'soft': '🎚️  Фильтры: soft (рекомендуется)',
+        'full': '🎚️  Фильтры: full (с шумодавом)',
+        'legacy': '🎚️  Фильтры: legacy (старый)',
+    }
+    print(preset_desc.get(current_preset, f'🎚️  Фильтры: {current_preset}'))
     
     enable_monitor = not getattr(args, 'no_monitor', False)
     rec = MeetingRecorder(enable_monitor=enable_monitor)
