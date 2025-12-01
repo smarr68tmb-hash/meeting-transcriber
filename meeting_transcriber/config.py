@@ -6,6 +6,14 @@
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Загружаем переменные из .env файла в корне проекта
+# (если файл существует и переменные ещё не установлены)
+project_root = Path(__file__).parent.parent
+dotenv_path = project_root / '.env'
+if dotenv_path.exists():
+    load_dotenv(dotenv_path)
 
 
 class Config:
