@@ -26,6 +26,7 @@ from .blackhole import (
 from .recorder import MeetingRecorder
 from .transcriber import EnhancedTranscriber
 from .summarizer import check_summarizer_available
+from .groq_backend import check_groq_available
 from .config import Config
 
 __version__ = "5.6.0"
@@ -143,6 +144,15 @@ def transcribe(
         Config.ASR_FALLBACK = False
 
     effective_backend = backend or Config.ASR_BACKEND
+
+    # Проверяем доступность Groq API для транскрипции
+    if effective_backend in ('groq', 'auto') and not check_groq_available():
+        console.print()
+        console.print("[yellow]⚠️  Groq API недоступен (GROQ_API_KEY не установлен)[/yellow]")
+        if effective_backend == 'groq':
+            console.print("[yellow]   Переключаюсь на faster-whisper[/yellow]")
+        elif effective_backend == 'auto':
+            console.print("[yellow]   Будет использован локальный faster-whisper[/yellow]")
 
     # Красивый вывод информации о режиме
     console.print()
@@ -353,6 +363,14 @@ def record(
             # Транскрипция после записи
             console.print()
             console.print("[cyan]📝 Начинаем транскрипцию...[/cyan]")
+
+            # Проверяем доступность Groq API для транскрипции
+            if Config.ASR_BACKEND in ('groq', 'auto') and not check_groq_available():
+                console.print("[yellow]⚠️  Groq API недоступен (GROQ_API_KEY не установлен)[/yellow]")
+                if Config.ASR_BACKEND == 'groq':
+                    console.print("[yellow]   Переключаюсь на faster-whisper[/yellow]")
+                elif Config.ASR_BACKEND == 'auto':
+                    console.print("[yellow]   Будет использован локальный faster-whisper[/yellow]")
 
             # Разрешаем summarize: --no-summarize > --summarize > None
             if no_summarize:
