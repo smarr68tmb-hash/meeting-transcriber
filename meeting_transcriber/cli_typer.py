@@ -17,6 +17,7 @@ from rich.text import Text
 from .blackhole import (
     get_blackhole_status,
 )
+from .recorder import MeetingRecorder
 
 __version__ = "5.6.0"
 
@@ -27,6 +28,31 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+@app.command(name="list-devices")
+def list_devices():
+    """
+    Показать список доступных аудио устройств.
+
+    Использует ffmpeg для получения списка устройств записи.
+    """
+    console.print()
+    console.print(
+        Panel(
+            "[cyan]Получение списка аудио устройств...[/cyan]",
+            title="🎤 Audio Devices",
+            border_style="cyan"
+        )
+    )
+    console.print()
+
+    try:
+        recorder = MeetingRecorder(enable_monitor=False)
+        recorder.list_devices()
+    except Exception as e:
+        console.print(f"[red]❌ Ошибка:[/red] {e}")
+        raise typer.Exit(code=1)
 
 
 @app.command(name="blackhole-status")

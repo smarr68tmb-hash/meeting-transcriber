@@ -90,6 +90,35 @@ class TestBlackholeStatus:
         assert "Audio MIDI Setup" in result.stdout
 
 
+class TestListDevices:
+    """Тесты команды list-devices."""
+
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    def test_list_devices_success(self, mock_recorder_class):
+        """Тест успешного получения списка устройств."""
+        mock_recorder = MagicMock()
+        mock_recorder_class.return_value = mock_recorder
+
+        result = runner.invoke(app, ["list-devices"])
+
+        assert result.exit_code == 0
+        assert "Audio Devices" in result.stdout
+        mock_recorder_class.assert_called_once_with(enable_monitor=False)
+        mock_recorder.list_devices.assert_called_once()
+
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    def test_list_devices_error(self, mock_recorder_class):
+        """Тест обработки ошибки при получении списка устройств."""
+        mock_recorder = MagicMock()
+        mock_recorder.list_devices.side_effect = FileNotFoundError("ffmpeg not found")
+        mock_recorder_class.return_value = mock_recorder
+
+        result = runner.invoke(app, ["list-devices"])
+
+        assert result.exit_code == 1
+        assert "ffmpeg not found" in result.stdout
+
+
 class TestVersion:
     """Тесты версии."""
 
