@@ -376,6 +376,26 @@ class TestRecord:
         assert "Transcription failed" in result.stdout
         assert "не удалась" in result.stdout
 
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_with_backend(self, mock_resolve, mock_recorder_class, mock_transcriber_class, tmp_path):
+        """Тест записи с указанием backend."""
+        mock_resolve.return_value = (":0", "Микрофон")
+        mock_recorder = MagicMock()
+        test_file = tmp_path / "test.wav"
+        mock_recorder.record.return_value = [test_file]
+        mock_recorder_class.return_value = mock_recorder
+
+        mock_transcriber = MagicMock()
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["record", "Meeting", "--backend", "faster"])
+
+        assert result.exit_code == 0
+        # Проверяем что EnhancedTranscriber был создан (транскрипция запустилась)
+        mock_transcriber_class.assert_called_once()
+
 
 class TestVersion:
     """Тесты версии."""

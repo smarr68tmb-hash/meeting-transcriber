@@ -254,6 +254,11 @@ def record(
         "--filter-preset", "-f",
         help="Пресет аудио фильтров: raw (минимум), soft (рекомендуется), full (с шумодавом), legacy (старый)"
     ),
+    backend: str = typer.Option(
+        None,
+        "--backend", "-b",
+        help="Backend для транскрипции (groq/auto/faster/whisper/whisperx)"
+    ),
     diarize: bool = typer.Option(
         False,
         "--diarize", "-d",
@@ -364,12 +369,19 @@ def record(
             console.print()
             console.print("[cyan]📝 Начинаем транскрипцию...[/cyan]")
 
+            # Переопределяем backend если указан
+            if backend:
+                os.environ['ASR_BACKEND'] = backend
+                Config.ASR_BACKEND = backend
+
+            effective_backend = backend or Config.ASR_BACKEND
+
             # Проверяем доступность Groq API для транскрипции
-            if Config.ASR_BACKEND in ('groq', 'auto') and not check_groq_available():
+            if effective_backend in ('groq', 'auto') and not check_groq_available():
                 console.print("[yellow]⚠️  Groq API недоступен (GROQ_API_KEY не установлен)[/yellow]")
-                if Config.ASR_BACKEND == 'groq':
+                if effective_backend == 'groq':
                     console.print("[yellow]   Переключаюсь на faster-whisper[/yellow]")
-                elif Config.ASR_BACKEND == 'auto':
+                elif effective_backend == 'auto':
                     console.print("[yellow]   Будет использован локальный faster-whisper[/yellow]")
 
             # Разрешаем summarize: --no-summarize > --summarize > None
