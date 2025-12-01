@@ -307,6 +307,75 @@ class TestRecord:
         assert result.exit_code == 1
         assert "не удалась" in result.stdout
 
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_with_diarization(self, mock_resolve, mock_recorder_class, mock_transcriber_class, tmp_path):
+        """Тест записи с диаризацией."""
+        mock_resolve.return_value = (":0", "Микрофон")
+        mock_recorder = MagicMock()
+        test_file = tmp_path / "test.wav"
+        mock_recorder.record.return_value = [test_file]
+        mock_recorder_class.return_value = mock_recorder
+
+        mock_transcriber = MagicMock()
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["record", "Meeting", "--diarize", "--speakers", "3"])
+
+        assert result.exit_code == 0
+        assert "🎭 С диаризацией спикеров (3)" in result.stdout
+        mock_transcriber_class.assert_called_once()
+        call_args = mock_transcriber_class.call_args
+        assert call_args.kwargs["diarize"] is True
+        assert call_args.kwargs["min_speakers"] == 3
+        assert call_args.kwargs["max_speakers"] == 3
+
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    @patch("meeting_transcriber.cli_typer.check_summarizer_available")
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_with_summarize(self, mock_resolve, mock_recorder_class, mock_summarizer, mock_transcriber_class, tmp_path):
+        """Тест записи с суммаризацией."""
+        mock_resolve.return_value = (":0", "Микрофон")
+        mock_recorder = MagicMock()
+        test_file = tmp_path / "test.wav"
+        mock_recorder.record.return_value = [test_file]
+        mock_recorder_class.return_value = mock_recorder
+
+        mock_summarizer.return_value = True  # GROQ_API_KEY доступен
+        mock_transcriber = MagicMock()
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["record", "Meeting", "--summarize"])
+
+        assert result.exit_code == 0
+        assert "🧠 С суммаризацией" in result.stdout
+        call_args = mock_transcriber_class.call_args
+        assert call_args.kwargs["summarize"] is True
+
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_transcription_fails_gracefully(self, mock_resolve, mock_recorder_class, mock_transcriber_class, tmp_path):
+        """Тест: запись успешна, но транскрипция падает — команда не должна упасть."""
+        mock_resolve.return_value = (":0", "Микрофон")
+        mock_recorder = MagicMock()
+        test_file = tmp_path / "test.wav"
+        mock_recorder.record.return_value = [test_file]
+        mock_recorder_class.return_value = mock_recorder
+
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe_files.side_effect = Exception("Transcription failed")
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["record", "Meeting"])
+
+        assert result.exit_code == 0  # Должна завершиться успешно
+        assert "Запись сохранена" in result.stdout
+        assert "Transcription failed" in result.stdout
+        assert "не удалась" in result.stdout
+
 
 class TestVersion:
     """Тесты версии."""

@@ -244,6 +244,26 @@ def record(
         "--filter-preset", "-f",
         help="Пресет аудио фильтров: raw (минимум), soft (рекомендуется), full (с шумодавом), legacy (старый)"
     ),
+    diarize: bool = typer.Option(
+        False,
+        "--diarize", "-d",
+        help="Определять спикеров (требует whisperx и HF_TOKEN)"
+    ),
+    speakers: int = typer.Option(
+        None,
+        "--speakers",
+        help="Ожидаемое число спикеров (подсказка для диаризации)"
+    ),
+    summarize: bool = typer.Option(
+        False,
+        "--summarize", "-s",
+        help="Сгенерировать саммари после транскрипции"
+    ),
+    no_summarize: bool = typer.Option(
+        False,
+        "--no-summarize",
+        help="Отключить суммаризацию (даже если AUTO_SUMMARIZE=1)"
+    ),
 ):
     """
     Записать встречу и транскрибировать (или только записать с --no-transcribe).
@@ -330,8 +350,52 @@ def record(
         if no_transcribe:
             console.print("[yellow]Транскрипция пропущена (--no-transcribe)[/yellow]")
         else:
-            # TODO: Транскрипция будет добавлена в Подэтапе 6.2
-            console.print("[yellow]⚠️  Транскрипция будет добавлена в следующем подэтапе[/yellow]")
+            # Транскрипция после записи
+            console.print()
+            console.print("[cyan]📝 Начинаем транскрипцию...[/cyan]")
+
+            # Разрешаем summarize: --no-summarize > --summarize > None
+            if no_summarize:
+                summarize_final = False
+            elif summarize:
+                summarize_final = True
+            else:
+                summarize_final = None  # Использовать Config.AUTO_SUMMARIZE
+
+            # Проверяем доступность суммаризации
+            will_summarize = summarize_final if summarize_final is not None else Config.AUTO_SUMMARIZE
+            if will_summarize and not check_summarizer_available():
+                console.print("[yellow]⚠️  Суммаризация запрошена, но GROQ_API_KEY не установлен — отключена[/yellow]")
+                summarize_final = False
+
+            # Показываем информацию о транскрипции
+            if diarize:
+                console.print(f"  🎭 С диаризацией спикеров{f' ({speakers})' if speakers else ''}")
+            if summarize_final:
+                console.print("  🧠 С суммаризацией")
+
+            # Передаём speakers как min и max для точного числа
+            min_sp = max_sp = None
+            if speakers is not None and speakers >= 1:
+                min_sp = max_sp = speakers
+
+            try:
+                tr = EnhancedTranscriber(
+                    diarize=diarize,
+                    min_speakers=min_sp,
+                    max_speakers=max_sp,
+                    summarize=summarize_final,
+                    summary_language="ru"
+                )
+                tr.transcribe_files(files)
+
+                console.print()
+                console.print("[green]✅ Транскрипция завершена[/green]")
+            except Exception as transcribe_error:
+                console.print()
+                console.print(f"[red]❌ Ошибка транскрипции:[/red] {transcribe_error}")
+                # Не выходим с ошибкой, т.к. запись успешна
+                console.print("[yellow]⚠️  Запись сохранена, но транскрипция не удалась[/yellow]")
 
     except KeyboardInterrupt:
         console.print()
