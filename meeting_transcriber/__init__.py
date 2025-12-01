@@ -12,7 +12,7 @@ Meeting Transcriber - Система записи и транскрипции с
     - summarizer: LLM суммаризация транскриптов
     - blackhole: Интеграция с BlackHole для записи системного звука
     - whisperx: Backend с диаризацией спикеров
-    - cli: Командный интерфейс
+    - cli_typer: Командный интерфейс (Typer + Rich)
 """
 
 # Workaround для PyTorch 2.6+ совместимости с pyannote
@@ -61,7 +61,7 @@ from .blackhole import (
     find_blackhole_device,
     get_blackhole_status
 )
-from .cli import main, __version__
+from .cli_typer import app, __version__
 
 __all__ = [
     "Config",
@@ -79,7 +79,7 @@ __all__ = [
     "check_blackhole_installed",
     "find_blackhole_device",
     "get_blackhole_status",
-    "main",
+    "app",
     "__version__",
 ]
 
