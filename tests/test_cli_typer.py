@@ -119,6 +119,116 @@ class TestListDevices:
         assert "ffmpeg not found" in result.stdout
 
 
+class TestTranscribe:
+    """Тесты команды transcribe."""
+
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    @patch("meeting_transcriber.cli_typer.check_summarizer_available")
+    def test_transcribe_basic(self, mock_summarizer, mock_transcriber_class, tmp_path):
+        """Тест базовой транскрипции файла."""
+        # Создаём тестовый файл
+        test_file = tmp_path / "test.wav"
+        test_file.write_text("fake audio")
+
+        mock_summarizer.return_value = False
+        mock_transcriber = MagicMock()
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["transcribe", str(test_file)])
+
+        assert result.exit_code == 0
+        assert "Backend" in result.stdout
+        assert "завершена" in result.stdout
+        mock_transcriber.transcribe_files.assert_called_once()
+
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    @patch("meeting_transcriber.cli_typer.check_summarizer_available")
+    def test_transcribe_with_backend(self, mock_summarizer, mock_transcriber_class, tmp_path):
+        """Тест транскрипции с указанием backend."""
+        test_file = tmp_path / "test.wav"
+        test_file.write_text("fake audio")
+
+        mock_summarizer.return_value = False
+        mock_transcriber = MagicMock()
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["transcribe", str(test_file), "--backend", "groq"])
+
+        assert result.exit_code == 0
+        assert "Groq API" in result.stdout
+
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    @patch("meeting_transcriber.cli_typer.check_summarizer_available")
+    def test_transcribe_with_diarization(self, mock_summarizer, mock_transcriber_class, tmp_path):
+        """Тест транскрипции с диаризацией."""
+        test_file = tmp_path / "test.wav"
+        test_file.write_text("fake audio")
+
+        mock_summarizer.return_value = False
+        mock_transcriber = MagicMock()
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["transcribe", str(test_file), "--diarize", "--speakers", "2"])
+
+        assert result.exit_code == 0
+        assert "Диаризация" in result.stdout
+        mock_transcriber_class.assert_called_once()
+        call_args = mock_transcriber_class.call_args
+        assert call_args.kwargs["diarize"] is True
+        assert call_args.kwargs["min_speakers"] == 2
+        assert call_args.kwargs["max_speakers"] == 2
+
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    @patch("meeting_transcriber.cli_typer.check_summarizer_available")
+    def test_transcribe_with_summarize(self, mock_summarizer, mock_transcriber_class, tmp_path):
+        """Тест транскрипции с суммаризацией."""
+        test_file = tmp_path / "test.wav"
+        test_file.write_text("fake audio")
+
+        mock_summarizer.return_value = True  # GROQ_API_KEY доступен
+        mock_transcriber = MagicMock()
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["transcribe", str(test_file), "--summarize", "--summary-lang", "en"])
+
+        assert result.exit_code == 0
+        assert "Суммаризация" in result.stdout
+        call_args = mock_transcriber_class.call_args
+        assert call_args.kwargs["summarize"] is True
+        assert call_args.kwargs["summary_language"] == "en"
+
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    def test_transcribe_multiple_files(self, mock_transcriber_class, tmp_path):
+        """Тест транскрипции нескольких файлов."""
+        file1 = tmp_path / "test1.wav"
+        file2 = tmp_path / "test2.wav"
+        file1.write_text("fake audio 1")
+        file2.write_text("fake audio 2")
+
+        mock_transcriber = MagicMock()
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["transcribe", str(file1), str(file2)])
+
+        assert result.exit_code == 0
+        assert "2 файл(ов)" in result.stdout
+
+    @patch("meeting_transcriber.cli_typer.EnhancedTranscriber")
+    def test_transcribe_error(self, mock_transcriber_class, tmp_path):
+        """Тест обработки ошибки при транскрипции."""
+        test_file = tmp_path / "test.wav"
+        test_file.write_text("fake audio")
+
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe_files.side_effect = Exception("Transcription failed")
+        mock_transcriber_class.return_value = mock_transcriber
+
+        result = runner.invoke(app, ["transcribe", str(test_file)])
+
+        assert result.exit_code == 1
+        assert "Transcription failed" in result.stdout
+
+
 class TestVersion:
     """Тесты версии."""
 

@@ -7,7 +7,9 @@ This is a new CLI implementation using Typer and Rich for better UX.
 Eventually will replace the old argparse-based CLI.
 """
 
+import os
 import sys
+from pathlib import Path
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -18,6 +20,9 @@ from .blackhole import (
     get_blackhole_status,
 )
 from .recorder import MeetingRecorder
+from .transcriber import EnhancedTranscriber
+from .summarizer import check_summarizer_available
+from .config import Config
 
 __version__ = "5.6.0"
 
@@ -51,6 +56,155 @@ def list_devices():
         recorder = MeetingRecorder(enable_monitor=False)
         recorder.list_devices()
     except Exception as e:
+        console.print(f"[red]❌ Ошибка:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command(name="transcribe")
+def transcribe(
+    files: list[Path] = typer.Argument(
+        ...,
+        help="Путь к аудио файлу(ам)",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    ),
+    backend: str = typer.Option(
+        None,
+        "--backend", "-b",
+        help="Backend для транскрипции (groq/auto/faster/whisper/whisperx)"
+    ),
+    diarize: bool = typer.Option(
+        False,
+        "--diarize", "-d",
+        help="Определять спикеров (требует whisperx и HF_TOKEN)"
+    ),
+    speakers: int = typer.Option(
+        None,
+        "--speakers",
+        help="Ожидаемое число спикеров (подсказка для диаризации)"
+    ),
+    no_filter: bool = typer.Option(
+        False,
+        "--no-filter",
+        help="Отключить фильтрацию галлюцинаций Whisper"
+    ),
+    no_fallback: bool = typer.Option(
+        False,
+        "--no-fallback",
+        help="Отключить fallback на локальный backend при ошибках API"
+    ),
+    summarize: bool = typer.Option(
+        False,
+        "--summarize", "-s",
+        help="Сгенерировать саммари встречи через LLM (требует GROQ_API_KEY)"
+    ),
+    no_summarize: bool = typer.Option(
+        False,
+        "--no-summarize",
+        help="Отключить суммаризацию (даже если AUTO_SUMMARIZE=1)"
+    ),
+    summary_lang: str = typer.Option(
+        "ru",
+        "--summary-lang",
+        help="Язык саммари (ru/en)"
+    ),
+):
+    """
+    Транскрибировать готовые аудио файлы.
+
+    Поддерживает несколько backend'ов:
+    - groq: Groq API (облако, быстро, бесплатно)
+    - auto: Groq с fallback на faster-whisper
+    - faster: faster-whisper (локально)
+    - whisper: openai-whisper (локально)
+    - whisperx: WhisperX с диаризацией (локально)
+    """
+    # Разрешаем summarize: --no-summarize > --summarize > None
+    if no_summarize:
+        summarize_final = False
+    elif summarize:
+        summarize_final = True
+    else:
+        summarize_final = None  # Использовать Config.AUTO_SUMMARIZE
+
+    # Переопределяем backend если указан
+    if backend:
+        os.environ['ASR_BACKEND'] = backend
+        Config.ASR_BACKEND = backend
+
+    # Отключаем fallback если указано
+    if no_fallback:
+        os.environ['ASR_FALLBACK'] = '0'
+        Config.ASR_FALLBACK = False
+
+    effective_backend = backend or Config.ASR_BACKEND
+
+    # Красивый вывод информации о режиме
+    console.print()
+
+    # Backend info
+    backend_info = {
+        'groq': '🚀 Groq API (облако)',
+        'auto': '🔄 Auto (Groq → локальный)',
+        'faster': '💻 faster-whisper (локально)',
+        'whisper': '💻 openai-whisper (локально)',
+        'whisperx': '🎭 WhisperX (локально, с диаризацией)',
+    }
+
+    info_table = Table(show_header=False, box=None, padding=(0, 2))
+    info_table.add_column("Label", style="cyan")
+    info_table.add_column("Value", style="white")
+
+    info_table.add_row("Backend", backend_info.get(effective_backend, effective_backend))
+    info_table.add_row("Files", f"{len(files)} файл(ов)")
+
+    if diarize:
+        info_table.add_row("Диаризация", "🎭 Включена")
+        if speakers:
+            info_table.add_row("  Спикеров", str(speakers))
+
+    # Проверяем доступность суммаризации
+    will_summarize = summarize_final if summarize_final is not None else Config.AUTO_SUMMARIZE
+    if will_summarize and not check_summarizer_available():
+        console.print("[yellow]⚠️  Суммаризация запрошена, но GROQ_API_KEY не установлен — отключена[/yellow]")
+        summarize_final = False
+    elif summarize_final is True:
+        info_table.add_row("Суммаризация", f"🧠 Включена (язык: {summary_lang})")
+    elif summarize_final is False:
+        info_table.add_row("Суммаризация", "🧠 Отключена")
+    elif Config.AUTO_SUMMARIZE:
+        info_table.add_row("Суммаризация", f"🧠 Авто (язык: {summary_lang})")
+
+    if no_filter:
+        info_table.add_row("Фильтрация", "⚠️  Отключена")
+
+    console.print(info_table)
+    console.print()
+
+    # Передаём speakers как min и max для точного числа
+    min_sp = max_sp = None
+    if speakers is not None:
+        if speakers < 1:
+            console.print(f"[yellow]⚠️  Некорректное число спикеров ({speakers}), игнорирую[/yellow]")
+        else:
+            min_sp = max_sp = speakers
+
+    try:
+        tr = EnhancedTranscriber(
+            diarize=diarize,
+            min_speakers=min_sp,
+            max_speakers=max_sp,
+            filter_hallucinations=not no_filter,
+            summarize=summarize_final,
+            summary_language=summary_lang
+        )
+        tr.transcribe_files(files)
+
+        console.print()
+        console.print("[green]✅ Транскрипция завершена[/green]")
+    except Exception as e:
+        console.print()
         console.print(f"[red]❌ Ошибка:[/red] {e}")
         raise typer.Exit(code=1)
 
