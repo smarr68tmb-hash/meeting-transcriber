@@ -8,7 +8,9 @@ Eventually will replace the old argparse-based CLI.
 """
 
 import os
+import re
 import sys
+import datetime
 from pathlib import Path
 import typer
 from rich.console import Console
@@ -18,6 +20,8 @@ from rich.text import Text
 
 from .blackhole import (
     get_blackhole_status,
+    CaptureMode,
+    resolve_device_for_mode,
 )
 from .recorder import MeetingRecorder
 from .transcriber import EnhancedTranscriber
@@ -203,6 +207,136 @@ def transcribe(
 
         console.print()
         console.print("[green]✅ Транскрипция завершена[/green]")
+    except Exception as e:
+        console.print()
+        console.print(f"[red]❌ Ошибка:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command(name="record")
+def record(
+    name: str = typer.Argument(
+        ...,
+        help="Название/базовое имя файла для записи"
+    ),
+    device: str = typer.Option(
+        None,
+        "--device",
+        help="ID устройства ввода (см. list-devices) или 'blackhole' для авто"
+    ),
+    capture_mode: str = typer.Option(
+        None,
+        "--capture-mode", "-c",
+        help="Режим захвата: mic (микрофон), system (BlackHole), both (mic+system)"
+    ),
+    no_transcribe: bool = typer.Option(
+        False,
+        "--no-transcribe",
+        help="Только записать, без транскрипции"
+    ),
+    no_monitor: bool = typer.Option(
+        False,
+        "--no-monitor",
+        help="Отключить мониторинг уровня звука"
+    ),
+    filter_preset: str = typer.Option(
+        None,
+        "--filter-preset", "-f",
+        help="Пресет аудио фильтров: raw (минимум), soft (рекомендуется), full (с шумодавом), legacy (старый)"
+    ),
+):
+    """
+    Записать встречу и транскрибировать (или только записать с --no-transcribe).
+
+    Поддерживает разные режимы захвата:
+    - mic: только микрофон
+    - system: только системный звук (требует BlackHole)
+    - both: микрофон + системный звук (требует Aggregate Device)
+    """
+    console.print()
+
+    # Определяем режим захвата и устройство
+    capture_mode_str = capture_mode or Config.CAPTURE_MODE
+    try:
+        capture_mode_enum = CaptureMode(capture_mode_str)
+    except ValueError:
+        console.print(f"[red]❌ Некорректный режим захвата: {capture_mode_str}[/red]")
+        console.print("Доступные режимы: mic, system, both")
+        raise typer.Exit(code=1)
+
+    # Резолвим устройство
+    device_id, device_desc = resolve_device_for_mode(capture_mode_enum, device)
+
+    if device_id is None:
+        console.print(f"[red]❌ {device_desc}[/red]")
+        raise typer.Exit(code=1)
+
+    # Применяем пресет фильтров если указан
+    if filter_preset:
+        if filter_preset in Config.FILTER_PRESETS:
+            Config.VOICE_FILTERS = Config.FILTER_PRESETS[filter_preset]
+        else:
+            console.print(f"[yellow]⚠️  Неизвестный пресет: {filter_preset}, используется по умолчанию[/yellow]")
+            filter_preset = None
+
+    # Красивый вывод информации о записи
+    info_table = Table(show_header=False, box=None, padding=(0, 2))
+    info_table.add_column("Label", style="cyan")
+    info_table.add_column("Value", style="white")
+
+    info_table.add_row("Название", name)
+    info_table.add_row("Устройство", device_desc)
+    info_table.add_row("Режим", capture_mode_enum.value)
+
+    # Показываем текущий пресет
+    current_preset = filter_preset or Config.FILTER_PRESET
+    preset_desc = {
+        'raw': '🎚️  raw (минимум)',
+        'soft': '🎚️  soft (рекомендуется)',
+        'full': '🎚️  full (с шумодавом)',
+        'legacy': '🎚️  legacy (старый)',
+    }
+    info_table.add_row("Фильтры", preset_desc.get(current_preset, current_preset))
+
+    if no_monitor:
+        info_table.add_row("Мониторинг", "Отключён")
+
+    if no_transcribe:
+        info_table.add_row("Транскрипция", "⚠️  Пропущена (--no-transcribe)")
+
+    console.print(info_table)
+    console.print()
+
+    # Создаём рекордер
+    enable_monitor = not no_monitor
+    rec = MeetingRecorder(enable_monitor=enable_monitor)
+
+    # Безопасное имя файла
+    safe_name = re.sub(r'[^\w\s-]', '', name).strip().replace(' ', '_')
+    base = Config.RECORDINGS_FOLDER / f"{safe_name}_{datetime.datetime.now():%Y%m%d_%H%M}"
+
+    console.print(f"[cyan]🎙️  Начинаем запись...[/cyan]")
+
+    try:
+        files = rec.record(base, device_id)
+
+        if not files:
+            console.print("[red]❌ Запись не удалась[/red]")
+            raise typer.Exit(code=1)
+
+        console.print()
+        console.print(f"[green]✅ Запись сохранена:[/green] {files[0]}")
+
+        if no_transcribe:
+            console.print("[yellow]Транскрипция пропущена (--no-transcribe)[/yellow]")
+        else:
+            # TODO: Транскрипция будет добавлена в Подэтапе 6.2
+            console.print("[yellow]⚠️  Транскрипция будет добавлена в следующем подэтапе[/yellow]")
+
+    except KeyboardInterrupt:
+        console.print()
+        console.print("[yellow]⚠️  Запись прервана пользователем[/yellow]")
+        raise typer.Exit(code=130)
     except Exception as e:
         console.print()
         console.print(f"[red]❌ Ошибка:[/red] {e}")

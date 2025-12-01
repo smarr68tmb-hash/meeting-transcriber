@@ -229,6 +229,85 @@ class TestTranscribe:
         assert "Transcription failed" in result.stdout
 
 
+class TestRecord:
+    """Тесты команды record."""
+
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_basic_with_no_transcribe(self, mock_resolve, mock_recorder_class, tmp_path):
+        """Тест базовой записи без транскрипции."""
+        # Мокаем resolve_device_for_mode
+        mock_resolve.return_value = (":0", "Микрофон (по умолчанию)")
+
+        # Мокаем MeetingRecorder
+        mock_recorder = MagicMock()
+        test_file = tmp_path / "test_20250101_1200.wav"
+        mock_recorder.record.return_value = [test_file]
+        mock_recorder_class.return_value = mock_recorder
+
+        result = runner.invoke(app, ["record", "TestMeeting", "--no-transcribe"])
+
+        assert result.exit_code == 0
+        assert "Запись сохранена" in result.stdout
+        assert "Транскрипция пропущена" in result.stdout
+        mock_recorder.record.assert_called_once()
+
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_with_capture_mode(self, mock_resolve, mock_recorder_class, tmp_path):
+        """Тест записи с указанием capture-mode."""
+        mock_resolve.return_value = (":1", "BlackHole 2ch")
+        mock_recorder = MagicMock()
+        test_file = tmp_path / "test.wav"
+        mock_recorder.record.return_value = [test_file]
+        mock_recorder_class.return_value = mock_recorder
+
+        result = runner.invoke(app, ["record", "Meeting", "--capture-mode", "system", "--no-transcribe"])
+
+        assert result.exit_code == 0
+        assert "system" in result.stdout
+
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_with_filter_preset(self, mock_resolve, mock_recorder_class, tmp_path):
+        """Тест записи с filter-preset."""
+        mock_resolve.return_value = (":0", "Микрофон")
+        mock_recorder = MagicMock()
+        test_file = tmp_path / "test.wav"
+        mock_recorder.record.return_value = [test_file]
+        mock_recorder_class.return_value = mock_recorder
+
+        result = runner.invoke(app, ["record", "Meeting", "--filter-preset", "soft", "--no-transcribe"])
+
+        assert result.exit_code == 0
+        assert "soft" in result.stdout
+
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_device_resolution_error(self, mock_resolve):
+        """Тест обработки ошибки при резолюции устройства."""
+        # Device не найден
+        mock_resolve.return_value = (None, "BlackHole не найден")
+
+        result = runner.invoke(app, ["record", "Meeting", "--no-transcribe"])
+
+        assert result.exit_code == 1
+        assert "BlackHole не найден" in result.stdout
+
+    @patch("meeting_transcriber.cli_typer.MeetingRecorder")
+    @patch("meeting_transcriber.cli_typer.resolve_device_for_mode")
+    def test_record_recording_failed(self, mock_resolve, mock_recorder_class):
+        """Тест обработки ошибки при записи."""
+        mock_resolve.return_value = (":0", "Микрофон")
+        mock_recorder = MagicMock()
+        mock_recorder.record.return_value = []  # Пустой список = запись не удалась
+        mock_recorder_class.return_value = mock_recorder
+
+        result = runner.invoke(app, ["record", "Meeting", "--no-transcribe"])
+
+        assert result.exit_code == 1
+        assert "не удалась" in result.stdout
+
+
 class TestVersion:
     """Тесты версии."""
 
