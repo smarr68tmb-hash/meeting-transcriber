@@ -73,15 +73,27 @@ class AudioLevelMonitor:
         """Получить индекс устройства из строки."""
         if self.device is None:
             return None
-        
-        # Если это число, используем как есть
+
+        # Если это число, проверяем что устройство существует
         try:
             # Формат macOS avfoundation: ":0" или "0"
             device_str = self.device.lstrip(':')
-            return int(device_str)
+            device_idx = int(device_str)
+
+            # Проверяем что устройство существует и поддерживает ввод
+            try:
+                device_info = sd.query_devices(device_idx)
+                if device_info['max_input_channels'] > 0:
+                    return device_idx
+                else:
+                    logger.debug(f"Устройство {device_idx} не поддерживает ввод, используем дефолтное")
+                    return None
+            except (ValueError, IndexError):
+                logger.debug(f"Устройство {device_idx} не найдено, используем дефолтное")
+                return None
         except ValueError:
             pass
-        
+
         # Поиск устройства по имени
         try:
             devices = sd.query_devices()
@@ -91,16 +103,27 @@ class AudioLevelMonitor:
                         return i
         except Exception as e:
             logger.debug(f"Ошибка поиска устройства: {e}")
-        
+
         return None
     
     def _audio_callback(self, indata, frames, time_info, status):
         """Callback для обработки аудио данных."""
         if status:
             logger.debug(f"Audio status: {status}")
-        
-        # Вычисляем RMS уровень
-        rms = np.sqrt(np.mean(indata ** 2))
+
+        # DEBUG: логируем первый callback
+        if not hasattr(self, '_first_callback_logged'):
+            logger.debug(f"Audio callback: shape={indata.shape}, dtype={indata.dtype}, max={np.max(np.abs(indata)):.6f}")
+            self._first_callback_logged = True
+
+        # Вычисляем RMS уровень для всех каналов (берём максимум)
+        # Это нужно для multi-channel устройств (Агрегатное устройство)
+        if indata.ndim > 1:
+            # Многоканальный ввод - берём максимум по всем каналам
+            rms = np.sqrt(np.max([np.mean(indata[:, ch] ** 2) for ch in range(indata.shape[1])]))
+        else:
+            # Одноканальный ввод
+            rms = np.sqrt(np.mean(indata ** 2))
         
         # Конвертируем в dB (с защитой от log(0))
         if rms > 0:
@@ -160,14 +183,24 @@ class AudioLevelMonitor:
     def _monitor_loop(self):
         """Основной цикл мониторинга."""
         device_idx = self._get_device_index()
-        
+
         try:
-            logger.debug(f"Запуск мониторинга на устройстве: {device_idx}")
-            
+            # Определяем параметры устройства
+            if device_idx is not None:
+                device_info = sd.query_devices(device_idx)
+                channels = min(device_info['max_input_channels'], 2)  # Максимум 2 канала для мониторинга
+                # Используем нативную частоту устройства
+                samplerate = int(device_info['default_samplerate'])
+            else:
+                channels = 1
+                samplerate = self.sample_rate
+
+            logger.debug(f"Запуск мониторинга на устройстве: {device_idx}, каналов: {channels}, частота: {samplerate}")
+
             self._stream = sd.InputStream(
                 device=device_idx,
-                channels=1,
-                samplerate=self.sample_rate,
+                channels=channels,
+                samplerate=samplerate,
                 blocksize=self.block_size,
                 callback=self._audio_callback
             )

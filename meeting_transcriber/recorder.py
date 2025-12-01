@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from .config import Config
-from .utils import get_platform_config, ffprobe_ok
+from .utils import get_platform_config, ffprobe_ok, get_ffmpeg_device_name
 from .logging_setup import get_logger
 from .audio_monitor import AudioLevelMonitor
 
@@ -31,6 +31,31 @@ class MeetingRecorder:
         self.recording_process: Optional[subprocess.Popen] = None
         self.enable_monitor = enable_monitor
         self._audio_monitor: Optional[AudioLevelMonitor] = None
+
+    def _find_builtin_mic(self) -> Optional[str]:
+        """
+        Найти встроенный микрофон для мониторинга.
+
+        Returns:
+            Имя микрофона или None (использовать дефолтное)
+        """
+        try:
+            import sounddevice as sd
+            devices = sd.query_devices()
+
+            # Ищем встроенный микрофон MacBook/iMac
+            for dev in devices:
+                name_lower = dev['name'].lower()
+                if dev['max_input_channels'] > 0:
+                    if any(keyword in name_lower for keyword in ['macbook', 'imac', 'встроенный', 'built-in']):
+                        if 'микрофон' in name_lower or 'microphone' in name_lower:
+                            logger.debug(f"Найден встроенный микрофон для мониторинга: {dev['name']}")
+                            return dev['name']
+        except Exception as e:
+            logger.debug(f"Ошибка поиска встроенного микрофона: {e}")
+
+        # Если не нашли - используем дефолтное устройство
+        return None
 
     def list_devices(self) -> None:
         """Показать список доступных аудио устройств."""
@@ -153,7 +178,10 @@ class MeetingRecorder:
         
         # Запускаем мониторинг уровня звука
         if self.enable_monitor:
-            self._audio_monitor = AudioLevelMonitor(device=device)
+            # Для мониторинга используем встроенный микрофон (проще и надёжнее)
+            # чем пытаться мониторить агрегатное устройство
+            monitor_device = self._find_builtin_mic()
+            self._audio_monitor = AudioLevelMonitor(device=monitor_device)
             if self._audio_monitor.is_available():
                 self._audio_monitor.start()
                 print("🎙️  Мониторинг уровня: активен")
